@@ -1,0 +1,332 @@
+"""Banco SQLite: conexão, schema versionado e seeds iniciais."""
+import json
+import sqlite3
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+DB_PATH = DATA_DIR / "certhub.db"
+
+ENVS = ["PRD", "TQS", "HMP", "DES"]
+REQ_STATUSES = ["aberta", "csr_gerada", "cert_emitido", "instalado", "concluida", "cancelada"]
+
+SCHEMA = """
+CREATE TABLE reqs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    req_number TEXT NOT NULL UNIQUE,
+    cn TEXT NOT NULL,
+    env TEXT NOT NULL CHECK (env IN ('PRD','TQS','HMP','DES')),
+    password TEXT,
+    status TEXT NOT NULL DEFAULT 'aberta',
+    notes TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE certificates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    req_id INTEGER REFERENCES reqs(id) ON DELETE SET NULL,
+    cn TEXT,
+    sans TEXT DEFAULT '',
+    subject TEXT,
+    issuer TEXT,
+    serial TEXT,
+    thumbprint_sha1 TEXT,
+    not_before TEXT,
+    not_after TEXT,
+    key_type TEXT,
+    source TEXT NOT NULL DEFAULT 'importado',
+    file_path TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE install_locations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    req_id INTEGER NOT NULL REFERENCES reqs(id) ON DELETE CASCADE,
+    cert_id INTEGER REFERENCES certificates(id) ON DELETE SET NULL,
+    server TEXT NOT NULL,
+    path_or_store TEXT DEFAULT '',
+    installed_at TEXT,
+    notes TEXT DEFAULT ''
+);
+
+CREATE TABLE activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    req_id INTEGER REFERENCES reqs(id) ON DELETE SET NULL,
+    action TEXT NOT NULL,
+    detail TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE docs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'outros',
+    content_md TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
+DEFAULT_SETTINGS = {
+    "base_dir": str(DATA_DIR / "files"),
+    "folder_template": "{env}/{req}_{cn}",
+    "alert_days": "30,60,90",
+    "password_policy": json.dumps({
+        "length": 16, "upper": True, "lower": True,
+        "digits": True, "symbols": True, "exclude_ambiguous": True,
+    }),
+    "csr_default_engine": "local",
+    "hsmutil_templates": json.dumps({
+        "gen_key": "",
+        "gen_csr": "",
+        "export_key": "",
+    }),
+}
+
+
+def get_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def init_db():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / "files").mkdir(parents=True, exist_ok=True)
+    conn = get_db()
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version < 1:
+        conn.executescript(SCHEMA)
+        _seed(conn)
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+    conn.close()
+
+
+def log_activity(conn, action: str, detail: str = "", req_id=None):
+    conn.execute(
+        "INSERT INTO activity_log (req_id, action, detail) VALUES (?,?,?)",
+        (req_id, action, detail),
+    )
+
+
+def get_setting(conn, key: str) -> str:
+    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else DEFAULT_SETTINGS.get(key, "")
+
+
+def _seed(conn):
+    for k, v in DEFAULT_SETTINGS.items():
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?,?)", (k, v))
+    for title, category, content in SEED_DOCS:
+        conn.execute(
+            "INSERT INTO docs (title, category, content_md) VALUES (?,?,?)",
+            (title, category, content),
+        )
+
+
+SEED_DOCS = [
+    ("Cheatsheet certutil", "certutil", """\
+# certutil — comandos úteis
+
+## Consultar certificados
+```
+certutil -store My                      :: lista o repositório pessoal (máquina)
+certutil -user -store My               :: repositório do usuário
+certutil -store My "<thumbprint>"      :: detalhes de um certificado
+certutil -dump certificado.cer         :: inspeciona um arquivo de certificado
+certutil -dump arquivo.pfx             :: inspeciona um PFX (pede a senha)
+```
+
+## Importar / exportar
+```
+certutil -importPFX arquivo.pfx                    :: importa PFX na máquina (LocalMachine\\My)
+certutil -f -p "SENHA" -importPFX arquivo.pfx      :: importa com senha, sobrescrevendo
+certutil -exportPFX My "<thumbprint>" saida.pfx    :: exporta para PFX
+certutil -addstore Root ca-raiz.cer                :: instala CA raiz confiável
+certutil -addstore CA intermediaria.cer            :: instala CA intermediária
+certutil -delstore My "<thumbprint>"               :: remove certificado
+```
+
+## Diagnóstico
+```
+certutil -verify -urlfetch certificado.cer   :: valida cadeia + revogação (CRL/OCSP)
+certutil -repairstore My "<thumbprint>"      :: reassocia chave privada ao certificado
+certutil -viewstore My                       :: abre visualização gráfica
+```
+"""),
+    ("certreq — gerar CSR no Windows", "certreq", """\
+# certreq — CSR via arquivo .inf
+
+## 1. Criar o arquivo `request.inf`
+```ini
+[NewRequest]
+Subject = "CN=www.exemplo.com.br, O=Empresa, C=BR"
+KeyLength = 2048
+KeySpec = 1
+Exportable = TRUE
+MachineKeySet = TRUE
+ProviderName = "Microsoft RSA SChannel Cryptographic Provider"
+RequestType = PKCS10
+HashAlgorithm = sha256
+
+[Extensions]
+2.5.29.17 = "{text}"
+_continue_ = "dns=www.exemplo.com.br&"
+_continue_ = "dns=exemplo.com.br"
+```
+
+## 2. Gerar a CSR
+```
+certreq -new request.inf pedido.csr
+```
+
+## 3. Instalar o certificado emitido pela CA
+```
+certreq -accept certificado.cer
+```
+> O `-accept` deve rodar na MESMA máquina onde a CSR foi gerada — é lá que está a chave privada.
+
+Dica: a aba **Gerar CSR** deste app monta o `.inf` automaticamente com CN e SANs.
+"""),
+    ("Cheatsheet OpenSSL", "openssl", """\
+# OpenSSL — comandos úteis
+
+## Gerar chave + CSR
+```
+openssl req -new -newkey rsa:2048 -nodes -keyout dominio.key -out dominio.csr \\
+  -subj "/CN=www.exemplo.com.br/O=Empresa/C=BR"
+
+# Conferir a CSR
+openssl req -in dominio.csr -noout -text
+```
+
+## Inspecionar certificados
+```
+openssl x509 -in cert.cer -noout -text            :: detalhes
+openssl x509 -in cert.cer -noout -dates           :: validade
+openssl x509 -in cert.cer -noout -fingerprint -sha1
+openssl s_client -connect host:443 -servername host   :: certificado de um servidor
+```
+
+## Conversões
+```
+openssl x509 -inform der -in cert.der -out cert.pem            :: DER -> PEM
+openssl pkcs12 -export -out cert.pfx -inkey dominio.key \\
+  -in cert.cer -certfile cadeia.cer                            :: montar PFX
+openssl pkcs12 -in cert.pfx -out cert.pem -nodes               :: PFX -> PEM (cert+chave)
+openssl pkcs12 -in cert.pfx -nocerts -nodes -out chave.key     :: só a chave
+openssl pkcs12 -in cert.pfx -clcerts -nokeys -out cert.cer     :: só o certificado
+```
+
+## Verificações
+```
+# Chave, CSR e certificado combinam? (os 3 hashes devem ser iguais)
+openssl rsa  -in dominio.key -noout -modulus | openssl md5
+openssl req  -in dominio.csr -noout -modulus | openssl md5
+openssl x509 -in cert.cer    -noout -modulus | openssl md5
+```
+"""),
+    ("Cheatsheet keytool (Java)", "keytool", """\
+# keytool — keystores Java (Tomcat, aplicações Java)
+
+## Gerar keystore + CSR
+```
+keytool -genkeypair -alias meusite -keyalg RSA -keysize 2048 \\
+  -keystore keystore.jks -dname "CN=www.exemplo.com.br, O=Empresa, C=BR" \\
+  -ext SAN=dns:www.exemplo.com.br,dns:exemplo.com.br
+
+keytool -certreq -alias meusite -keystore keystore.jks -file pedido.csr \\
+  -ext SAN=dns:www.exemplo.com.br,dns:exemplo.com.br
+```
+
+## Importar certificados emitidos (ordem: raiz -> intermediária -> final)
+```
+keytool -importcert -alias raiz -file ca-raiz.cer -keystore keystore.jks -trustcacerts
+keytool -importcert -alias intermediaria -file ca-int.cer -keystore keystore.jks
+keytool -importcert -alias meusite -file certificado.cer -keystore keystore.jks
+```
+
+## Consultas e conversões
+```
+keytool -list -v -keystore keystore.jks                     :: listar conteúdo
+keytool -importkeystore -srckeystore cert.pfx -srcstoretype PKCS12 \\
+  -destkeystore keystore.jks -deststoretype JKS             :: PFX -> JKS
+keytool -importkeystore -srckeystore keystore.jks \\
+  -destkeystore cert.p12 -deststoretype PKCS12              :: JKS -> PFX/P12
+```
+"""),
+    ("Manual: instalar certificado no IIS", "manual", """\
+# Instalação de certificado — IIS (Windows Server)
+
+## Via PFX (mais comum)
+1. Copie o `.pfx` para o servidor.
+2. `certutil -f -p "SENHA" -importPFX certificado.pfx` (ou clique duplo -> LocalMachine -> Pessoal).
+3. Abra o **Gerenciador do IIS** -> site -> **Bindings** -> `https` -> selecione o novo certificado.
+4. Reinicie o site se necessário (`iisreset` só em último caso).
+
+## Via CSR gerada no próprio servidor (certreq)
+1. Gere a CSR com `certreq -new request.inf pedido.csr` (use a aba Gerar CSR).
+2. Submeta a CSR à CA e baixe o certificado emitido.
+3. `certreq -accept certificado.cer` **na mesma máquina**.
+4. Ajuste o binding no IIS como acima.
+
+## Checklist pós-instalação
+- [ ] Cadeia completa instalada (raiz e intermediárias em seus repositórios)
+- [ ] `certutil -verify -urlfetch certificado.cer` sem erros
+- [ ] Site abre com cadeado / sem aviso no navegador
+- [ ] Registrar local de instalação na demanda (aba Demandas)
+"""),
+    ("Manual: instalar certificado no Tomcat/Java", "manual", """\
+# Instalação de certificado — Tomcat / aplicações Java
+
+1. Localize (ou crie) o keystore usado pelo Tomcat (`server.xml`, conector HTTPS -> `keystoreFile`).
+2. Importe a cadeia e o certificado no keystore (ver *Cheatsheet keytool*).
+   - Se o certificado veio como PFX: converta com `keytool -importkeystore -srcstoretype PKCS12`.
+3. Confira o alias e a senha no `server.xml`:
+```xml
+<Connector port="8443" scheme="https" secure="true" SSLEnabled="true"
+    keystoreFile="conf/keystore.jks" keystorePass="SENHA" keyAlias="meusite" />
+```
+4. Reinicie o Tomcat.
+5. Valide: `openssl s_client -connect host:8443 -servername host | openssl x509 -noout -dates`
+6. Registre o local de instalação na demanda.
+"""),
+    ("Manual: instalar certificado no Apache/Nginx", "manual", """\
+# Instalação de certificado — Apache / Nginx (Linux)
+
+## Arquivos necessários
+- `dominio.key` (chave privada), `certificado.crt`, `cadeia.crt` (intermediárias)
+- Se recebeu PFX: extraia com openssl (ver *Cheatsheet OpenSSL* -> Conversões).
+
+## Apache
+```apache
+SSLEngine on
+SSLCertificateFile      /etc/ssl/certs/certificado.crt
+SSLCertificateKeyFile   /etc/ssl/private/dominio.key
+SSLCertificateChainFile /etc/ssl/certs/cadeia.crt
+```
+`apachectl configtest && systemctl reload apache2`
+
+## Nginx (certificado + cadeia concatenados)
+```
+cat certificado.crt cadeia.crt > fullchain.crt
+```
+```nginx
+ssl_certificate     /etc/ssl/certs/fullchain.crt;
+ssl_certificate_key /etc/ssl/private/dominio.key;
+```
+`nginx -t && systemctl reload nginx`
+
+## Validação
+```
+openssl s_client -connect host:443 -servername host -showcerts
+```
+"""),
+]

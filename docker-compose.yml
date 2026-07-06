@@ -1,0 +1,9 @@
+services:
+  certhub:
+    build: .
+    container_name: certhub
+    ports:
+      - "127.0.0.1:8477:8477"   # somente acesso local
+    volumes:
+      - ./data:/app/data        # banco SQLite + arquivos persistentes
+    restart: unless-stopped
