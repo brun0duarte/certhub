@@ -24,6 +24,9 @@ INSTALL_LOCATIONS = [
     "tomcat", "outro",
 ]
 
+WO_TYPES = ['WO', 'CRQ']
+WO_STATUSES = ['aberta', 'em_andamento', 'concluida', 'cancelada']
+
 SCHEMA = """
 CREATE TABLE reqs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -193,6 +196,28 @@ CREATE TABLE sessions (
 );
 """
 
+SCHEMA_V7 = """
+ALTER TABLE reqs ADD COLUMN wo_number TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE work_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    wo_number TEXT NOT NULL UNIQUE,
+    wo_type TEXT NOT NULL DEFAULT 'WO'
+        CHECK (wo_type IN ('WO','CRQ')),
+    req_id INTEGER REFERENCES reqs(id) ON DELETE SET NULL,
+    parent_req_id INTEGER REFERENCES reqs(id) ON DELETE SET NULL,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'aberta'
+        CHECK (status IN ('aberta','em_andamento','concluida','cancelada')),
+    scheduled_at TEXT,
+    completed_at TEXT,
+    assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+"""
+
 DEFAULT_SETTINGS = {
     "base_dir": str(DATA_DIR / "files"),
     "folder_template": "{env}/{req}_{cn}",
@@ -251,6 +276,10 @@ def init_db():
         conn.executescript(SCHEMA_V6)
         _seed_v6(conn)
         conn.execute("PRAGMA user_version = 6")
+        conn.commit()
+    if version < 7:
+        conn.executescript(SCHEMA_V7)
+        conn.execute("PRAGMA user_version = 7")
         conn.commit()
     conn.close()
 
