@@ -86,9 +86,18 @@ const INSTALL_TYPES = {
   secrets_manager: "Secrets Manager", azion: "Azion", akamai: "Akamai",
   iis: "IIS", apache: "Apache", nginx: "Nginx", tomcat: "Tomcat", outro: "Outro",
 };
+const LIFECYCLE_STATUS = {
+  pedido: 'Pedido',
+  instalado: 'Instalado',
+  em_inventario: 'Em Inventário',
+  reservado: 'Reservado',
+  excluir: 'Excluir',
+  fim_de_vida: 'Fim de Vida',
+};
 const envBadge = e => `<span class="badge badge-${esc(e)}">${esc(e)}</span>`;
 const statusBadge = s => `<span class="badge badge-${esc(s)}">${esc(STATUS_LABEL[s] || s)}</span>`;
 const demandBadge = d => `<span class="badge badge-demand-${esc(d)}">${esc(DEMAND_TYPES[d] || d)}</span>`;
+const lifecycleBadge = s => `<span class="badge badge-lc-${esc(s)}">${esc(LIFECYCLE_STATUS[s] || s)}</span>`;
 function daysBadge(days) {
   if (days === null || days === undefined) return "";
   const cls = days < 0 ? "days-danger" : days <= 30 ? "days-danger" : days <= 60 ? "days-warn" : "days-ok";
@@ -172,6 +181,15 @@ views.dashboard = async () => {
       <div class="stat-card stat-accent"><div class="stat-value">${d.totals.reqs_abertas}</div><div class="stat-label">REQs em aberto</div></div>
       <div class="stat-card"><div class="stat-value">${d.totals.certificados}</div><div class="stat-label">Certificados</div></div>
     </div>
+    ${d.lifecycle ? `
+    <div class="panel mt">
+      <h3>Certificados por Lifecycle</h3>
+      <div class="lc-grid">
+        ${Object.entries(d.lifecycle).map(([s, n]) => 
+          `<div class="lc-stat">${lifecycleBadge(s)}<span class="lc-n">${n}</span></div>`
+        ).join('')}
+      </div>
+    </div>` : ''}
     <div class="grid grid-2 mt">
       <div class="panel">
         <h3>Próximos vencimentos</h3>
@@ -825,6 +843,11 @@ views.certs = async () => {
           ${["servidor", "cliente_mtls", "ambos", "ca"].map(t =>
             `<option value="${t}">${CERT_TYPE_LABEL[t]}</option>`).join("")}
         </select>
+        <select class="input" id="cf-lifecycle">
+          <option value="">Todos Lifecycle</option>
+          ${Object.entries(LIFECYCLE_STATUS).map(([k, v]) => 
+            `<option value="${k}">${esc(v)}</option>`).join("")}
+        </select>
         <select class="input" id="cf-issuer"><option value="">Emissor</option></select>
       </div>
       <div id="cert-table"></div>
@@ -835,6 +858,7 @@ views.certs = async () => {
     const params = new URLSearchParams({
       search: $("#cf-search").value,
       cert_type: $("#cf-type").value,
+      lifecycle: $("#cf-lifecycle").value,
       issuer_cn: issuerSel,
     });
     if ($("#cf-exp").value !== "") params.set("expiring_days", $("#cf-exp").value);
@@ -845,7 +869,7 @@ views.certs = async () => {
 
     $("#cert-table").innerHTML = rows.length ? `
       <table class="tbl"><thead><tr>
-        <th>CN</th><th>Tipo</th><th>REQ</th><th>Validade</th><th></th><th>Emissor</th><th></th>
+        <th>CN</th><th>Tipo</th><th>REQ</th><th>Validade</th><th></th><th>Emissor</th><th>Lifecycle</th><th></th>
       </tr></thead><tbody>${rows.map(c => `
         <tr>
           <td>${esc(c.cn)} ${c.issued_count ? `<span class="badge k-cat" title="Certificados emitidos por esta CA no repositório">emite ${c.issued_count}</span>` : ""}</td>
@@ -856,6 +880,7 @@ views.certs = async () => {
           <td class="muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
               title="${esc(c.issuer || "")}">
             ${c.parent_cn ? `<span title="Emissor presente no repositório — cadeia vinculada">🔗</span> ` : ""}${esc(c.issuer_cn || c.issuer || "")}</td>
+          <td>${lifecycleBadge(c.lifecycle_status)}</td>
           <td style="white-space:nowrap">
             <button class="btn btn-sm" data-detail="${c.id}">Detalhes</button>
             <button class="btn btn-sm btn-danger" data-del="${c.id}">✕</button>
@@ -871,7 +896,7 @@ views.certs = async () => {
     });
   }
   $("#cf-search").oninput = () => { clearTimeout(window._t2); window._t2 = setTimeout(load, 300); };
-  $("#cf-exp").onchange = $("#cf-type").onchange = load;
+  $("#cf-exp").onchange = $("#cf-type").onchange = $("#cf-lifecycle").onchange = load;
   $("#cf-issuer").onchange = () => { issuerSel = $("#cf-issuer").value; load(); };
   $("#cert-import").onclick = () => importCertModal(load);
   $("#cert-relink").onclick = async () => {
@@ -897,7 +922,16 @@ function certDetail(c, onDone) {
       ${row("Válido de", fmtDateTime(c.not_before))}${row("Válido até", fmtDateTime(c.not_after))}
       ${row("Chave", c.key_type)}${row("Arquivo", c.file_path, 1)}
       ${row("REQ", c.req_number)}
+      ${row("Lifecycle atual", lifecycleBadge(c.lifecycle_status))}
     </table>
+    <div class="form-row mt">
+      <div class="field" style="margin:0"><label>Lifecycle</label>
+        <select class="input" id="cd-lifecycle">
+          ${Object.entries(LIFECYCLE_STATUS).map(([k, v]) => 
+            `<option value="${k}" ${c.lifecycle_status === k ? "selected" : ""}>${esc(v)}</option>`).join("")}
+        </select></div>
+      <button class="btn" id="cd-save-lifecycle" style="align-self:flex-end">Salvar lifecycle</button>
+    </div>
     <div class="form-row mt">
       <div class="field" style="margin:0"><label>Tipo</label>
         <select class="input" id="cd-type">
@@ -913,6 +947,10 @@ function certDetail(c, onDone) {
   $("#cd-save-type").onclick = async () => {
     await api(`/certs/${c.id}`, { method: "PUT", json: { cert_type: $("#cd-type").value } });
     closeModal(); toast("Tipo atualizado"); onDone && onDone();
+  };
+  $("#cd-save-lifecycle").onclick = async () => {
+    await api(`/certs/${c.id}/lifecycle`, { method: "PUT", json: { lifecycle_status: $("#cd-lifecycle").value } });
+    closeModal(); toast("Lifecycle atualizado"); onDone && onDone();
   };
 }
 
