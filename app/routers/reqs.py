@@ -137,6 +137,13 @@ def update_req(req_id: int, body: ReqUpdate):
             log_activity(conn, "status_alterado", f"{row['status']} → {fields['status']}", req_id)
         conn.commit()
     updated = dict(conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone())
+    
+    if updated["status"] == "cert_emitido":
+        existing_wo = conn.execute("SELECT id FROM work_orders WHERE parent_req_id=?", (req_id,)).fetchone()
+        if not existing_wo:
+            updated["suggest_wo"] = True
+            updated["suggested_wo_type"] = "CRQ" if updated["env"] == "PRD" else "WO"
+
     conn.close()
     return updated
 
