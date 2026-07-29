@@ -487,3 +487,14 @@ pre.code-block:hover .copy-btn { opacity: 1; }
 
 .sidebar-user-section { margin-bottom: 8px; padding: 6px; border-radius: 6px; background: var(--bg-sunken); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .user-name { font-weight: 600; font-size: 13px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+
+/* ---------- Lifecycle badges ---------- */
+.badge-lc-pedido        { background: #6c63ff33; color: #a29bfe; border-color: #6c63ff66; }
+.badge-lc-instalado     { background: #00b09433; color: #55efc4; border-color: #00b09466; }
+.badge-lc-em_inventario { background: #0984e333; color: #74b9ff; border-color: #0984e366; }
+.badge-lc-reservado     { background: #fdcb6e33; color: #ffeaa7; border-color: #fdcb6e66; }
+.badge-lc-excluir       { background: #e1706033; color: #ff7675; border-color: #e1706066; }
+.badge-lc-fim_de_vida   { background: #63636333; color: #b2bec3; border-color: #63636366; }
+.lc-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.lc-stat { display: flex; align-items: center; gap: 8px; }
+.lc-n    { font-size: 1.2rem; font-weight: 700; }
