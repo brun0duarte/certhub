@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .db import init_db
 from .routers import (certs, csr, dashboard, docs, files, passwords, reqs,
-                      settings, tasks, templates, validate)
+                      settings, tasks, templates, validate, auth, users)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -20,9 +20,16 @@ for router in (reqs.router, certs.router, csr.router, passwords.router,
                tasks.router, templates.router, validate.router):
     app.include_router(router, prefix="/api")
 
+app.include_router(auth.router)
+app.include_router(users.router)
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/", include_in_schema=False)
 def index():
     return FileResponse(STATIC_DIR / "index.html")
+
+@app.get("/login", include_in_schema=False)
+def login_page():
+    return FileResponse(STATIC_DIR / "login.html")
