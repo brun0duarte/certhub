@@ -1373,6 +1373,148 @@ views.analytics = async () => {
     </div>`;
 };
 
+};
+
+/* ---------------- Usuários ---------------- */
+views.users = async () => {
+  main.innerHTML = `<div class="empty">Carregando…</div>`;
+  if (window._currentUser?.role !== 'admin') {
+    main.innerHTML = `<div class="empty">Acesso negado</div>`;
+    return;
+  }
+  
+  const users = await api("/users");
+  
+  main.innerHTML = `
+    <div class="view-header"><div>
+      <div class="view-title">Usuários</div>
+      <div class="view-sub">Gerenciamento de acesso ao CertHub</div>
+    </div>
+    <button class="btn btn-primary" id="btn-new-user">+ Novo usuário</button>
+    </div>
+    
+    <div class="panel">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Usuário</th>
+            <th>Nome</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${users.map(u => `
+            <tr>
+              <td>${esc(u.username)}</td>
+              <td>${esc(u.display_name)}</td>
+              <td>${esc(u.email)}</td>
+              <td><span class="badge badge-role-${esc(u.role)}">${esc(u.role)}</span></td>
+              <td>${u.active ? '<span class="badge badge-ok">Ativo</span>' : '<span class="badge badge-warn">Inativo</span>'}</td>
+              <td class="row-actions">
+                <button class="btn btn-ghost btn-sm" data-edit="${u.id}">Editar</button>
+                <button class="btn btn-ghost btn-sm" data-reset="${u.id}">Senha</button>
+                <button class="btn btn-ghost btn-sm" data-del="${u.id}" ${u.id === window._currentUser.id ? 'disabled' : ''}>Desativar</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
+    
+  $("#btn-new-user").onclick = () => showUserModal();
+  
+  $$("[data-edit]").forEach(btn => btn.onclick = () => {
+    const u = users.find(x => x.id == btn.dataset.edit);
+    if (u) showUserModal(u);
+  });
+  
+  $$("[data-reset]").forEach(btn => btn.onclick = () => {
+    const id = btn.dataset.reset;
+    const body = `
+      <div class="form-group"><label>Nova senha</label>
+      <input type="password" id="u-new-pwd" class="input"></div>
+    `;
+    const m = modal("Redefinir Senha", body, {
+      footer: `<button class="btn" data-close>Cancelar</button>
+               <button class="btn btn-primary" id="btn-save-pwd">Salvar</button>`
+    });
+    $("#btn-save-pwd", m).onclick = async () => {
+      const p = $("#u-new-pwd", m).value;
+      if (!p) return toast("Senha não pode ser vazia", "error");
+      await api(`/users/${id}/reset-password`, { method: "POST", json: { new_password: p } });
+      toast("Senha redefinida!");
+      closeModal();
+    };
+  });
+  
+  $$("[data-del]").forEach(btn => btn.onclick = async () => {
+    if (!confirm("Desativar este usuário?")) return;
+    await api(`/users/${btn.dataset.del}`, { method: "DELETE" });
+    toast("Usuário desativado!");
+    views.users();
+  });
+};
+
+function showUserModal(u = null) {
+  const isEdit = !!u;
+  const body = `
+    <div class="form-group"><label>Username</label>
+    <input type="text" id="u-user" class="input" value="${esc(u?.username)}" ${isEdit ? "disabled" : ""}></div>
+    <div class="form-group"><label>Nome de exibição</label>
+    <input type="text" id="u-name" class="input" value="${esc(u?.display_name)}"></div>
+    <div class="form-group"><label>Email</label>
+    <input type="email" id="u-email" class="input" value="${esc(u?.email)}"></div>
+    <div class="form-group"><label>Role</label>
+    <select id="u-role" class="input">
+      <option value="viewer" ${u?.role === 'viewer' ? 'selected' : ''}>Visualizador (viewer)</option>
+      <option value="operator" ${u?.role === 'operator' ? 'selected' : ''}>Operador (operator)</option>
+      <option value="admin" ${u?.role === 'admin' ? 'selected' : ''}>Administrador (admin)</option>
+    </select></div>
+    ${isEdit ? `
+    <div class="form-group"><label>Status</label>
+    <select id="u-active" class="input">
+      <option value="1" ${u?.active ? 'selected' : ''}>Ativo</option>
+      <option value="0" ${!u?.active ? 'selected' : ''}>Inativo</option>
+    </select></div>
+    ` : `
+    <div class="form-group"><label>Senha provisória</label>
+    <input type="password" id="u-pwd" class="input"></div>
+    `}
+  `;
+  const m = modal(isEdit ? "Editar Usuário" : "Novo Usuário", body, {
+    footer: `<button class="btn" data-close>Cancelar</button>
+             <button class="btn btn-primary" id="btn-save-user">Salvar</button>`
+  });
+  
+  $("#btn-save-user", m).onclick = async () => {
+    const data = {
+      display_name: $("#u-name", m).value,
+      email: $("#u-email", m).value,
+      role: $("#u-role", m).value
+    };
+    try {
+      if (isEdit) {
+        data.active = parseInt($("#u-active", m).value);
+        await api(`/users/${u.id}`, { method: "PUT", json: data });
+        toast("Usuário atualizado!");
+      } else {
+        data.username = $("#u-user", m).value;
+        data.password = $("#u-pwd", m).value;
+        if (!data.username || !data.password) return toast("Username e senha obrigatórios", "error");
+        await api("/users", { method: "POST", json: data });
+        toast("Usuário criado!");
+      }
+      closeModal();
+      views.users();
+    } catch (e) {
+      toast(e.message, "error");
+    }
+  };
+}
+
 /* ---------------- Aparência ---------------- */
 const ACCENTS = [
   ["blue", "#3b6ef6"], ["green", "#1f9d63"], ["purple", "#7a4fd4"],
@@ -1451,4 +1593,26 @@ applyTheme(localStorage.getItem("certhub-theme") || "dark");
 applyLayout(localStorage.getItem("certhub-layout") || "side");
 applyAccent(localStorage.getItem("certhub-accent") || "blue");
 
-navigate();
+(async () => {
+  try {
+    const me = await api('/auth/me');
+    window._currentUser = me;
+    const userEl = document.getElementById('sidebar-user');
+    if (userEl) {
+      userEl.innerHTML = `<span class="user-name">${esc(me.display_name || me.username)}</span><span class="badge badge-role-${esc(me.role)}">${esc(me.role)}</span>`;
+    }
+    const btnLogout = document.getElementById('btn-logout');
+    if (btnLogout) {
+      btnLogout.onclick = async () => {
+        await fetch('/api/auth/logout', { method: 'POST' });
+        window.location.href = '/login';
+      };
+    }
+  } catch (e) {
+    if (!location.pathname.includes('/login')) {
+      window.location.href = '/login';
+      return;
+    }
+  }
+  navigate();
+})();
