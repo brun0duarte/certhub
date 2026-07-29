@@ -46,10 +46,15 @@ def dashboard():
             "SELECT COUNT(*) FROM work_orders WHERE status IN ('aberta','em_andamento')"
         ).fetchone()[0],
     }
+    
+    lifecycle_counts = {r['lifecycle_status']: r['n'] for r in conn.execute(
+        'SELECT lifecycle_status, COUNT(*) n FROM certificates GROUP BY lifecycle_status'
+    ).fetchall()}
+    
     conn.close()
     return {"alert_days": alert_days, "expiring": expiring, "by_env": by_env,
             "by_status": by_status, "next_expiring": next_expiring,
-            "activity": activity, "totals": totals}
+            "activity": activity, "totals": totals, "lifecycle": lifecycle_counts}
 
 
 @router.get("/analytics")
