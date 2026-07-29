@@ -4,8 +4,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
+from datetime import datetime, timezone
 
-from ..db import CERT_TYPES, get_db, get_setting, log_activity
+from ..db import CERT_TYPES, get_db, get_setting, log_activity, LIFECYCLE_STATUSES
 from ..services import certparse, folders
 
 router = APIRouter(tags=["certs"])
@@ -14,6 +15,7 @@ router = APIRouter(tags=["certs"])
 class CertUpdate(BaseModel):
     req_id: int | None = None
     cert_type: str | None = None
+    lifecycle_status: str | None = None
 
 
 def _issuer_cn_from_dn(dn: str) -> str:
@@ -36,7 +38,7 @@ def _link_parent(conn, cert_id: int, issuer_dn: str, subject_dn: str):
 
 @router.get("/certs")
 def list_certs(search: str = "", expiring_days: int | None = None,
-               cert_type: str = "", issuer_cn: str = ""):
+               cert_type: str = "", issuer_cn: str = "", lifecycle: str = ""):
     conn = get_db()
     sql = """SELECT c.*, r.req_number, r.env,
                     p.cn AS parent_cn,
@@ -59,6 +61,9 @@ def list_certs(search: str = "", expiring_days: int | None = None,
     if issuer_cn:
         sql += " AND c.issuer_cn = ?"
         params.append(issuer_cn)
+    if lifecycle:
+        sql += " AND c.lifecycle_status = ?"
+        params.append(lifecycle)
     sql += " ORDER BY c.not_after ASC"
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     issuers = [r[0] for r in conn.execute(
@@ -123,15 +128,30 @@ async def import_cert(file: UploadFile = File(...), password: str = Form(""),
     dest.write_bytes(data)
     file_path = str(dest)
 
+    now = datetime.now()
+    try:
+        not_after_dt = datetime.fromisoformat(info['not_after'].replace('Z', '+00:00'))
+        if not_after_dt.replace(tzinfo=None) < now:
+            lifecycle = 'fim_de_vida'
+        else:
+            lifecycle = 'em_inventario'
+    except Exception:
+        lifecycle = 'em_inventario'
+        
+    if lifecycle != 'fim_de_vida' and req_id:
+        has_install = conn.execute("SELECT 1 FROM install_locations WHERE req_id=?", (req_id,)).fetchone()
+        if has_install:
+            lifecycle = 'instalado'
+
     cur = conn.execute(
         """INSERT INTO certificates
            (req_id, cn, sans, subject, issuer, issuer_cn, cert_type, serial,
-            thumbprint_sha1, not_before, not_after, key_type, source, file_path)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            thumbprint_sha1, not_before, not_after, key_type, source, file_path, lifecycle_status)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (req_id, info["cn"], info["sans"], info["subject"], info["issuer"],
          info["issuer_cn"], info["cert_type"], info["serial"],
          info["thumbprint_sha1"], info["not_before"],
-         info["not_after"], info["key_type"], "importado", file_path),
+         info["not_after"], info["key_type"], "importado", file_path, lifecycle),
     )
     cert_id = cur.lastrowid
     _link_parent(conn, cert_id, info["issuer"], info["subject"])
@@ -152,6 +172,9 @@ def update_cert(cert_id: int, body: CertUpdate):
     fields = body.model_dump(exclude_unset=True)
     if "cert_type" in fields and fields["cert_type"] not in CERT_TYPES + [""]:
         raise HTTPException(400, f"Tipo inválido. Use: {', '.join(CERT_TYPES)} ou vazio")
+    if "lifecycle_status" in fields and fields["lifecycle_status"] not in LIFECYCLE_STATUSES:
+        raise HTTPException(400, f"Status inválido. Use: {LIFECYCLE_STATUSES}")
+        
     conn = get_db()
     if not conn.execute("SELECT id FROM certificates WHERE id=?", (cert_id,)).fetchone():
         conn.close()
@@ -166,6 +189,26 @@ def update_cert(cert_id: int, body: CertUpdate):
         conn.commit()
     conn.close()
     return {"ok": True}
+
+class LifecycleUpdate(BaseModel):
+    lifecycle_status: str
+
+@router.put('/certs/{cert_id}/lifecycle')
+def update_lifecycle(cert_id: int, body: LifecycleUpdate):
+    if body.lifecycle_status not in LIFECYCLE_STATUSES:
+        raise HTTPException(400, f'Status inválido. Use: {LIFECYCLE_STATUSES}')
+    conn = get_db()
+    if not conn.execute('SELECT id FROM certificates WHERE id=?', (cert_id,)).fetchone():
+        conn.close()
+        raise HTTPException(404, 'Certificado não encontrado')
+    conn.execute(
+        "UPDATE certificates SET lifecycle_status=? WHERE id=?",
+        (body.lifecycle_status, cert_id)
+    )
+    log_activity(conn, 'lifecycle_alterado', f'{body.lifecycle_status}', None)
+    conn.commit()
+    conn.close()
+    return {'ok': True, 'lifecycle_status': body.lifecycle_status}
 
 
 @router.delete("/certs/{cert_id}")
