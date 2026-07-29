@@ -228,3 +228,98 @@ def recent_activity(limit: int = 30):
            ORDER BY a.id DESC LIMIT ?""", (min(limit, 200),))]
     conn.close()
     return rows
+
+FLOWS: dict[str, str] = {
+    "emissao": """\
+flowchart TD
+    A([🟢 Abertura da demanda]) --> B[Coletar informações<br/>CN, SANs, ambiente, solicitante]
+    B --> C[Gerar CSR<br/>Aba **Gerar CSR** → engine local / certreq / HSM]
+    C --> D[Submeter CSR à CA<br/>Portal Sectigo / AC Interna / ICP]
+    D --> E[Download do certificado emitido<br/>.cer / .crt / .pem]
+    E --> F[Importar certificado<br/>Aba **Certificados** → Importar]
+    F --> G[Instalar certificado<br/>Ver local de instalação abaixo]
+    G --> H[Validar cadeia<br/>Aba **Validar cadeia**]
+    H --> I[Registrar local de instalação<br/>Aba **Demandas** → Abrir → Locais]
+    I --> J[Abrir Processo de Mudança<br/>Se ambiente PRD → obrigatório]
+    J --> K([✅ Concluída])
+
+    subgraph Locais de Instalação
+        L1[Mainframe — via processo RACF/ACM]
+        L2[Balanceador — F5 / NetScaler]
+        L3[Key Vault Azure — az keyvault certificate import]
+        L4[AWS Cert Manager — aws acm import-certificate]
+        L5[Azion / Akamai — portal da CDN]
+    end
+""",
+    "renovacao": """\
+flowchart TD
+    A([🔄 Início da Renovação]) --> B[Identificar certificado a vencer<br/>Dashboard → Próximos vencimentos]
+    B --> C{Mesma chave privada?}
+    C -- Sim --> D[Reutilizar CSR existente<br/>Aba CSR Decoder → repositório]
+    C -- Não --> E[Gerar nova CSR<br/>Aba Gerar CSR]
+    D --> F[Submeter à CA]
+    E --> F
+    F --> G[Receber novo certificado]
+    G --> H[Importar e validar cadeia]
+    H --> I[Substituir nos locais de instalação<br/>Mesmo processo que emissão]
+    I --> J[Revogar certificado antigo<br/>se necessário]
+    J --> K([✅ Renovação concluída])
+""",
+    "revogacao": """\
+flowchart TD
+    A([🔴 Solicitação de Revogação]) --> B{Motivo}
+    B -- Chave comprometida --> C[URGENTE: revogar imediatamente<br/>Contato direto com a CA]
+    B -- Outros motivos --> D[Abrir demanda formal]
+    D --> E[Identificar serial e thumbprint<br/>Aba Certificados → Detalhes]
+    E --> F[Solicitar revogação à CA<br/>Portal / e-mail / API]
+    F --> G[Confirmar CRL/OCSP atualizado<br/>certutil -verify -urlfetch cert.cer]
+    G --> H[Remover certificado dos sistemas]
+    H --> I[Documentar ocorrência]
+    C --> G
+    I --> J([✅ Revogação concluída])
+""",
+    "usuario": """\
+flowchart TD
+    A([👤 Certificado de Usuário]) --> B[Identificar usuário e sistema<br/>AD, e-mail, token físico?]
+    B --> C{Tipo de emissão}
+    C -- AC Interna --> D[Gerar CSR para o usuário<br/>ou usar template SCEP/ADCS]
+    C -- ICP-Brasil --> E[Dirigir usuário à AR/AC ICP<br/>com documentação pessoal]
+    D --> F[Emitir pelo servidor ADCS<br/>ou exportar PFX]
+    F --> G[Entregar ao usuário<br/>com senha por canal seguro]
+    E --> H[Usuário retira token/smart card]
+    G --> I([✅ Certificado entregue])
+    H --> I
+""",
+    "instalacao_existente": """\
+flowchart TD
+    A([📦 Instalação de Certificado Existente]) --> B[Receber arquivos<br/>.pfx / .pem / .cer + chave]
+    B --> C[Importar na plataforma<br/>Aba Certificados → Importar]
+    C --> D[Validar cadeia<br/>Aba Validar Cadeia]
+    D --> E{Aprovação necessária?}
+    E -- PRD --> F[Abrir Processo de Mudança]
+    E -- Não-PRD --> G[Instalar diretamente]
+    F --> H[Executar no horário aprovado]
+    H --> I[Instalar e validar]
+    G --> I
+    I --> J[Registrar local de instalação]
+    J --> K([✅ Instalação concluída])
+""",
+    "outro": """\
+flowchart TD
+    A([📋 Demanda Genérica]) --> B[Detalhar escopo]
+    B --> C[Executar atividades necessárias]
+    C --> D[Documentar resultado]
+    D --> E([✅ Concluído])
+""",
+}
+
+@router.get("/reqs/flows")
+def get_flows():
+    return FLOWS
+
+@router.get("/reqs/flows/{demand_type}")
+def get_flow(demand_type: str):
+    flow = FLOWS.get(demand_type)
+    if not flow:
+        raise HTTPException(404, f"Fluxo não encontrado para tipo '{demand_type}'")
+    return {"demand_type": demand_type, "mermaid": flow}
