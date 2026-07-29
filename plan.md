@@ -24,12 +24,12 @@ Sem agentes/skills configurados   →   Agentes e skills configurados
 ### ÉPICO 1 — Remoção de Operações em Lote
 > **Prioridade: Alta** | Deve ser feita primeiro pois simplifica a base de código
 
-- [ ] **1.1** Remover o router `batch.py` e desregistrá-lo em `main.py`
-- [ ] **1.2** Remover as tabelas `batch_ops` e `batch_op_items` do schema (manter retrocompatibilidade com migration)
-- [ ] **1.3** Remover a aba "Op. em Lote" do `index.html` (nav link)
-- [ ] **1.4** Remover a view `views.batch` e código relacionado em `app.js`
-- [ ] **1.5** Mover os fluxos Mermaid (FLOWS) para o router de demandas como documentação de processo
-- [ ] **1.6** Limpar imports e referências órfãs
+- [x] **1.1** Remover o router `batch.py` e desregistrá-lo em `main.py`
+- [x] **1.2** Remover as tabelas `batch_ops` e `batch_op_items` do schema (manter retrocompatibilidade com migration)
+- [x] **1.3** Remover a aba "Op. em Lote" do `index.html` (nav link)
+- [x] **1.4** Remover a view `views.batch` e código relacionado em `app.js`
+- [x] **1.5** Mover os fluxos Mermaid (FLOWS) para o router de demandas como documentação de processo
+- [x] **1.6** Limpar imports e referências órfãs
 
 ---
 
