@@ -165,6 +165,34 @@ CREATE TABLE IF NOT EXISTS batch_op_items (
 );
 """
 
+SCHEMA_V6 = """
+ALTER TABLE activity_log ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE reqs ADD COLUMN assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL;
+
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'viewer'
+        CHECK (role IN ('admin','operator','viewer')),
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    expires_at TEXT NOT NULL,
+    ip_addr TEXT DEFAULT ''
+);
+"""
+
 DEFAULT_SETTINGS = {
     "base_dir": str(DATA_DIR / "files"),
     "folder_template": "{env}/{req}_{cn}",
@@ -219,6 +247,11 @@ def init_db():
         conn.executescript(SCHEMA_V5)
         conn.execute("PRAGMA user_version = 5")
         conn.commit()
+    if version < 6:
+        conn.executescript(SCHEMA_V6)
+        _seed_v6(conn)
+        conn.execute("PRAGMA user_version = 6")
+        conn.commit()
     conn.close()
 
 
@@ -242,6 +275,18 @@ def _seed(conn):
             "INSERT INTO docs (title, category, content_md) VALUES (?,?,?)",
             (title, category, content),
         )
+
+
+def _seed_v6(conn):
+    from app.services.auth import hash_password
+    pwd_hash, pwd_salt = hash_password("certhub@2025")
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO users (username, display_name, email, role, password_hash, salt)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("admin", "Administrador", "admin@certhub.local", "admin", pwd_hash, pwd_salt)
+    )
 
 
 def _seed_tasks(conn):
