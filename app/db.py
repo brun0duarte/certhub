@@ -218,6 +218,13 @@ CREATE TABLE work_orders (
 );
 """
 
+LIFECYCLE_STATUSES = ['pedido', 'instalado', 'em_inventario', 'reservado', 'excluir', 'fim_de_vida']
+
+SCHEMA_V8 = """
+ALTER TABLE certificates ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'em_inventario'
+    CHECK (lifecycle_status IN ('pedido','instalado','em_inventario','reservado','excluir','fim_de_vida'));
+"""
+
 DEFAULT_SETTINGS = {
     "base_dir": str(DATA_DIR / "files"),
     "folder_template": "{env}/{req}_{cn}",
@@ -280,6 +287,10 @@ def init_db():
     if version < 7:
         conn.executescript(SCHEMA_V7)
         conn.execute("PRAGMA user_version = 7")
+        conn.commit()
+    if version < 8:
+        conn.executescript(SCHEMA_V8)
+        conn.execute("PRAGMA user_version = 8")
         conn.commit()
     conn.close()
 
