@@ -70,8 +70,25 @@ const STATUS_LABEL = {
   aberta: "Aberta", csr_gerada: "CSR gerada", cert_emitido: "Cert. emitido",
   instalado: "Instalado", concluida: "Concluída", cancelada: "Cancelada",
 };
+const DEMAND_TYPES = {
+  emissao: "Emissão", renovacao: "Renovação", revogacao: "Revogação",
+  usuario: "Cert. Usuário", instalacao_existente: "Instalação Existente", outro: "Outro",
+};
+const CERT_CATEGORIES = {
+  sectigo_dv: "Sectigo DV", sectigo_ov: "Sectigo OV", sectigo_ev: "Sectigo EV",
+  ac_interna_apl_prd: "AC Interna APL (PRD)", ac_icp_testes: "AC ICP Testes",
+  apple: "Apple", bandeiras: "Bandeiras (Elo/Visa)", parceiro_externo: "Parceiro Externo",
+  sepro: "Sepro", outro: "Outro",
+};
+const INSTALL_TYPES = {
+  mainframe: "Mainframe", balanceador: "Balanceador",
+  keyvault_azure: "Key Vault Azure", aws_cert_manager: "AWS Cert Manager",
+  secrets_manager: "Secrets Manager", azion: "Azion", akamai: "Akamai",
+  iis: "IIS", apache: "Apache", nginx: "Nginx", tomcat: "Tomcat", outro: "Outro",
+};
 const envBadge = e => `<span class="badge badge-${esc(e)}">${esc(e)}</span>`;
 const statusBadge = s => `<span class="badge badge-${esc(s)}">${esc(STATUS_LABEL[s] || s)}</span>`;
+const demandBadge = d => `<span class="badge badge-demand-${esc(d)}">${esc(DEMAND_TYPES[d] || d)}</span>`;
 function daysBadge(days) {
   if (days === null || days === undefined) return "";
   const cls = days < 0 ? "days-danger" : days <= 30 ? "days-danger" : days <= 60 ? "days-warn" : "days-ok";
@@ -185,6 +202,118 @@ views.dashboard = async () => {
     </div>`;
 };
 
+/* ---------------- Kanban ---------------- */
+const LANES = [
+  ["backlog", "📥 Backlog"], ["a_fazer", "📌 A fazer"],
+  ["em_andamento", "⚙️ Em andamento"], ["concluido", "✅ Concluído"],
+];
+const PRIO_LABEL = { alta: "Alta", media: "Média", baixa: "Baixa" };
+const prioBadge = p => `<span class="badge badge-prio-${esc(p)}">${esc(PRIO_LABEL[p] || p)}</span>`;
+
+views.kanban = async () => {
+  let filterCat = "";
+  main.innerHTML = `
+    <div class="view-header"><div>
+      <div class="view-title">Kanban</div>
+      <div class="view-sub">Tarefas dos projetos — arraste os cartões entre as colunas</div>
+    </div>
+    <div class="toolbar">
+      <select class="input" id="k-filter"><option value="">Todas as categorias</option></select>
+      <button class="btn btn-primary" id="k-new">＋ Nova tarefa</button>
+    </div></div>
+    <div class="kanban" id="k-board"></div>`;
+
+  async function load() {
+    const data = await api("/tasks" + (filterCat ? `?category=${encodeURIComponent(filterCat)}` : ""));
+    const sel = $("#k-filter");
+    sel.innerHTML = `<option value="">Todas as categorias</option>` +
+      data.categories.map(c => `<option value="${esc(c)}" ${c === filterCat ? "selected" : ""}>${esc(c)}</option>`).join("");
+
+    $("#k-board").innerHTML = LANES.map(([lane, label]) => {
+      const cards = data.tasks.filter(t => t.lane === lane);
+      return `
+        <div class="kanban-col" data-lane="${lane}">
+          <div class="kanban-col-head"><span>${label}</span><span class="kanban-count">${cards.length}</span></div>
+          ${cards.map(t => `
+            <div class="kanban-card ${lane === "concluido" ? "k-done" : ""}" draggable="true" data-task="${t.id}">
+              <div class="k-meta">${prioBadge(t.priority)}<span class="badge k-cat">${esc(t.category)}</span></div>
+              <div class="k-title">${esc(t.title)}</div>
+              ${t.description ? `<div class="k-desc">${esc(t.description)}</div>` : ""}
+            </div>`).join("") || `<div class="k-empty">—</div>`}
+        </div>`;
+    }).join("");
+
+    const byId = Object.fromEntries(data.tasks.map(t => [t.id, t]));
+    $$(".kanban-card").forEach(card => {
+      card.ondragstart = e => {
+        e.dataTransfer.setData("text/plain", card.dataset.task);
+        e.dataTransfer.effectAllowed = "move";
+      };
+      card.onclick = () => taskModal(byId[+card.dataset.task], load);
+    });
+    $$(".kanban-col").forEach(col => {
+      col.ondragover = e => { e.preventDefault(); col.classList.add("drag-over"); };
+      col.ondragleave = () => col.classList.remove("drag-over");
+      col.ondrop = async e => {
+        e.preventDefault();
+        col.classList.remove("drag-over");
+        const id = +e.dataTransfer.getData("text/plain");
+        if (!id) return;
+        try {
+          await api(`/tasks/${id}/move`, { method: "POST", json: { lane: col.dataset.lane } });
+          load();
+        } catch (err) { toast(err.message, "err"); }
+      };
+    });
+  }
+
+  $("#k-filter").onchange = () => { filterCat = $("#k-filter").value; load(); };
+  $("#k-new").onclick = () => taskModal(null, load);
+  await load();
+};
+
+function taskModal(t, onDone) {
+  modal(t ? "Editar tarefa" : "Nova tarefa", `
+    <div class="field"><label>Título</label>
+      <input class="input" id="t-title" value="${t ? esc(t.title) : ""}" placeholder="O que precisa ser feito?"></div>
+    <div class="form-row">
+      <div class="field"><label>Categoria</label>
+        <input class="input" id="t-cat" list="t-cats" value="${t ? esc(t.category) : ""}" placeholder="certhub, wiki, hsm…">
+        <datalist id="t-cats">${["certhub", "wiki", "hsm", "processos", "geral"].map(c => `<option>${c}</option>`).join("")}</datalist></div>
+      <div class="field"><label>Prioridade</label>
+        <select class="input" id="t-prio">${["alta", "media", "baixa"].map(p =>
+          `<option value="${p}" ${t && t.priority === p ? "selected" : ""}>${PRIO_LABEL[p]}</option>`).join("")}</select></div>
+      <div class="field"><label>Coluna</label>
+        <select class="input" id="t-lane">${LANES.map(([v, l]) =>
+          `<option value="${v}" ${t && t.lane === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+    </div>
+    <div class="field"><label>Descrição</label>
+      <textarea class="input" id="t-desc" rows="5">${t ? esc(t.description || "") : ""}</textarea></div>
+  `, { footer: `
+      ${t ? `<button class="btn btn-danger" id="t-delete">Excluir</button>` : ""}
+      <button class="btn" data-close>Cancelar</button>
+      <button class="btn btn-primary" id="t-save">${t ? "Salvar" : "Criar tarefa"}</button>` });
+
+  $("#t-save").onclick = async () => {
+    const body = {
+      title: $("#t-title").value, description: $("#t-desc").value,
+      category: $("#t-cat").value || "geral",
+      priority: $("#t-prio").value, lane: $("#t-lane").value,
+    };
+    try {
+      if (t) await api(`/tasks/${t.id}`, { method: "PUT", json: body });
+      else await api("/tasks", { method: "POST", json: body });
+      closeModal(); toast(t ? "Tarefa atualizada" : "Tarefa criada");
+      onDone && onDone();
+    } catch (e) { toast(e.message, "err"); }
+  };
+  if (t) $("#t-delete").onclick = async () => {
+    if (!confirm(`Excluir a tarefa "${t.title}"?`)) return;
+    await api(`/tasks/${t.id}`, { method: "DELETE" });
+    closeModal(); toast("Tarefa excluída"); onDone && onDone();
+  };
+}
+
 /* ---------------- Demandas ---------------- */
 views.reqs = async () => {
   main.innerHTML = `
@@ -262,8 +391,26 @@ function newReqModal(onDone) {
   };
 }
 
+function fillTemplate(content, r) {
+  const cert = (r.certificates && r.certificates[0]) || {};
+  const locais = (r.locations || [])
+    .map(l => l.server + (l.path_or_store ? ` (${l.path_or_store})` : "")).join("; ");
+  const map = {
+    req: r.req_number, cn: r.cn, env: r.env,
+    status: STATUS_LABEL[r.status] || r.status,
+    senha: r.password, notas: r.notes,
+    vencimento: cert.not_after ? fmtDate(cert.not_after) : "",
+    emissor: cert.issuer, sans: cert.sans, serial: cert.serial,
+    thumbprint: cert.thumbprint_sha1, locais,
+    data: fmtDate(new Date().toISOString()),
+  };
+  return content.replace(/\{(\w+)\}/g, (m, k) =>
+    map[k] !== undefined && map[k] !== null && String(map[k]).trim() !== ""
+      ? String(map[k]) : `[${k}?]`);
+}
+
 async function openReq(id, onDone) {
-  const r = await api(`/reqs/${id}`);
+  const [r, tpls] = await Promise.all([api(`/reqs/${id}`), api("/templates")]);
   modal(`${r.req_number} — ${r.cn}`, `
     <div class="chips" style="margin-bottom:14px">${envBadge(r.env)} ${statusBadge(r.status)}
       <span class="muted">criada em ${fmtDateTime(r.created_at)}</span></div>
@@ -288,6 +435,15 @@ async function openReq(id, onDone) {
         <button class="btn btn-sm" id="d-folder-make">Criar</button>
         <button class="btn btn-sm" id="d-folder-open" ${r.folder_exists ? "" : "disabled"}>Abrir</button>
       </div></div>
+
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Resposta pronta</h3>
+    <div style="display:flex;gap:6px">
+      <select class="input" id="d-tpl"><option value="">— escolha um template —</option>
+        ${tpls.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}</select>
+      <button class="btn" id="d-tpl-copy" disabled>📋 Copiar</button>
+    </div>
+    <textarea class="input mono" id="d-tpl-preview" rows="9" readonly
+      style="display:none;margin-top:8px"></textarea>
 
     <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Locais de instalação</h3>
     <div id="d-locs">${r.locations.map(l => `
@@ -319,6 +475,15 @@ async function openReq(id, onDone) {
       <button class="btn" id="d-gocsr">📝 Gerar CSR</button>
       <button class="btn btn-primary" id="d-save">Salvar</button>` });
 
+  $("#d-tpl").onchange = () => {
+    const tpl = tpls.find(t => t.id === +$("#d-tpl").value);
+    const preview = $("#d-tpl-preview");
+    if (!tpl) { preview.style.display = "none"; $("#d-tpl-copy").disabled = true; return; }
+    preview.value = fillTemplate(tpl.content, r);
+    preview.style.display = "";
+    $("#d-tpl-copy").disabled = false;
+  };
+  $("#d-tpl-copy").onclick = () => copyText($("#d-tpl-preview").value, "Resposta copiada!");
   $("#d-pwd-copy").onclick = () => copyText($("#d-pwd").value, "Senha copiada!");
   $("#d-pwd-regen").onclick = async () => {
     if (!confirm("Regenerar a senha desta demanda?")) return;
@@ -364,61 +529,89 @@ async function openReq(id, onDone) {
 }
 
 /* ---------------- Gerar CSR ---------------- */
+/* ---------------- Gerar CSR (enhanced) ---------------- */
 views.csr = async () => {
   const reqs = await api("/reqs");
   const open = reqs.filter(r => !["concluida", "cancelada"].includes(r.status));
   const pre = csrPrefill; csrPrefill = null;
-  main.innerHTML = `
-    <div class="view-header"><div>
-      <div class="view-title">Gerar CSR</div>
-      <div class="view-sub">Chave + CSR com suporte a wildcard e SANs — local, certreq ou HSM</div>
-    </div></div>
-    <div class="grid grid-2">
-      <div class="panel">
-        <div class="field"><label>Engine</label>
-          <select class="input" id="c-engine">
-            <option value="local">Local (biblioteca cryptography)</option>
-            <option value="certreq">certreq — Windows (.inf)</option>
-            <option value="hsmutil">HSM (hsmutil CLI)</option>
-          </select></div>
-        <div class="field"><label>Demanda vinculada (opcional — salva os arquivos na pasta da REQ)</label>
-          <select class="input" id="c-req">
-            <option value="">— nenhuma —</option>
-            ${open.map(r => `<option value="${r.id}" ${pre && pre.req_id === r.id ? "selected" : ""}>
-              ${esc(r.req_number)} · ${esc(r.cn)} (${r.env})</option>`).join("")}
-          </select></div>
-        <div class="field"><label>CN (Common Name)</label>
-          <div style="display:flex;gap:6px">
-            <input class="input" id="c-cn" placeholder="www.exemplo.com.br" value="${pre ? esc(pre.cn) : ""}">
-            <button class="btn" id="c-wild" title="Transformar em wildcard">*.</button>
-          </div></div>
-        <div class="field"><label>SANs — um por linha (o CN é incluído automaticamente)</label>
-          <textarea class="input mono" id="c-sans" placeholder="exemplo.com.br&#10;app.exemplo.com.br"></textarea></div>
-        <div class="form-row">
-          <div class="field"><label>Chave</label>
-            <select class="input" id="c-key">
-              <option value="rsa2048">RSA 2048</option>
-              <option value="rsa4096">RSA 4096</option>
-              <option value="ecp256">EC P-256</option>
-            </select></div>
-          <div class="field"><label>Organização (O)</label><input class="input" id="c-org" placeholder="Empresa"></div>
-          <div class="field"><label>País (C)</label><input class="input" id="c-country" placeholder="BR" maxlength="2"></div>
-        </div>
-        <div class="field" id="c-label-field" style="display:none"><label>Label da chave no HSM</label>
-          <input class="input mono" id="c-label" placeholder="cert_exemplo_2026"></div>
-        <button class="btn btn-primary" id="c-go">Gerar CSR</button>
-      </div>
-      <div class="panel" id="c-result"><h3>Resultado</h3>
-        <div class="empty">Preencha o formulário e clique em “Gerar CSR”.</div></div>
-    </div>`;
+
+  // Build open reqs options
+  const reqOpts = open.map(r =>
+    `<option value="${r.id}"${pre && pre.req_id === r.id ? " selected" : ""}>${r.req_number} · ${r.cn} (${r.env})</option>`
+  ).join("");
+
+  main.innerHTML =
+    '<div class="view-header"><div>' +
+    '<div class="view-title">Gerar CSR</div>' +
+    '<div class="view-sub">Chave + CSR com suporte a wildcard e SANs — local, certreq ou HSM</div>' +
+    '</div></div>' +
+    '<div class="grid grid-2">' +
+    '<div class="panel">' +
+    '<div class="field"><label>Engine</label>' +
+    '<select class="input" id="c-engine">' +
+    '<option value="local">Local (biblioteca cryptography)</option>' +
+    '<option value="certreq">certreq — Windows (.inf)</option>' +
+    '<option value="hsmutil">HSM (hsmutil CLI)</option>' +
+    '</select></div>' +
+    '<div class="field"><label>Demanda vinculada (opcional — salva os arquivos na pasta da REQ)</label>' +
+    '<select class="input" id="c-req"><option value="">— nenhuma —</option>' + reqOpts + '</select></div>' +
+    '<div class="field"><label>CN (Common Name)</label>' +
+    '<div style="display:flex;gap:6px">' +
+    '<input class="input" id="c-cn" placeholder="www.exemplo.com.br" value="' + (pre ? pre.cn : "") + '">' +
+    '<button class="btn" id="c-wild" title="Transformar em wildcard">*.</button>' +
+    '</div></div>' +
+    '<div class="field"><label>SANs — um por linha (o CN é incluído automaticamente)</label>' +
+    '<textarea class="input mono" id="c-sans" placeholder="exemplo.com.br\napp.exemplo.com.br"></textarea></div>' +
+    '<div class="csr-subject-section">' +
+    '<button class="section-toggle" id="c-subject-toggle">' +
+    '<span>🔧 Atributos do Subject DN (O, OU, C, ST, L, E)</span>' +
+    '<span class="toggle-arrow" id="c-subject-arrow">▸</span>' +
+    '</button>' +
+    '<div class="section-body" id="c-subject-body" style="display:none">' +
+    '<div class="form-row">' +
+    '<div class="field"><label>Organização (O)</label><input class="input" id="c-org" placeholder="Empresa S.A."></div>' +
+    '<div class="field"><label>Unidade Org. (OU)</label><input class="input" id="c-ou" placeholder="TI / Infra"></div>' +
+    '</div>' +
+    '<div class="form-row">' +
+    '<div class="field"><label>País (C)</label><input class="input" id="c-country" placeholder="BR" maxlength="2"></div>' +
+    '<div class="field"><label>Estado (ST)</label><input class="input" id="c-state" placeholder="SP"></div>' +
+    '<div class="field"><label>Localidade (L)</label><input class="input" id="c-locality" placeholder="São Paulo"></div>' +
+    '</div>' +
+    '<div class="field"><label>E-mail (E)</label><input class="input" id="c-email" placeholder="pki@empresa.com.br" type="email"></div>' +
+    '</div></div>' +
+    '<div class="form-row" style="margin-top:12px">' +
+    '<div class="field"><label>Tipo de chave</label>' +
+    '<select class="input" id="c-key">' +
+    '<option value="rsa2048">RSA 2048</option>' +
+    '<option value="rsa4096">RSA 4096</option>' +
+    '<option value="ecp256">EC P-256</option>' +
+    '</select></div>' +
+    '</div>' +
+    '<div class="field" id="c-label-field" style="display:none"><label>Label da chave no HSM</label>' +
+    '<input class="input mono" id="c-label" placeholder="cert_exemplo_2026"></div>' +
+    '<button class="btn btn-primary" id="c-go">⚙️ Gerar CSR</button>' +
+    '</div>' +
+    '<div class="panel" id="c-result"><h3>Resultado</h3>' +
+    '<div class="empty">Preencha o formulário e clique em "Gerar CSR".</div></div>' +
+    '</div>';
+
+  $("#c-subject-toggle").onclick = () => {
+    const body = $("#c-subject-body");
+    const arrow = $("#c-subject-arrow");
+    const isOpen = body.style.display === "none";
+    body.style.display = isOpen ? "" : "none";
+    arrow.textContent = isOpen ? "▾" : "▸";
+  };
 
   $("#c-engine").onchange = () =>
     $("#c-label-field").style.display = $("#c-engine").value === "hsmutil" ? "" : "none";
+
   $("#c-wild").onclick = () => {
     const el = $("#c-cn");
     const v = el.value.trim().replace(/^\*\./, "").replace(/^www\./, "");
     el.value = v ? "*." + v : "*.";
   };
+
   $("#c-go").onclick = async () => {
     const btn = $("#c-go");
     btn.disabled = true; btn.textContent = "Gerando…";
@@ -427,43 +620,50 @@ views.csr = async () => {
         cn: $("#c-cn").value,
         sans: $("#c-sans").value.split("\n").map(s => s.trim()).filter(Boolean),
         key_type: $("#c-key").value,
-        org: $("#c-org").value, country: $("#c-country").value.toUpperCase(),
+        org: $("#c-org") ? $("#c-org").value : "",
+        ou: $("#c-ou") ? $("#c-ou").value : "",
+        country: $("#c-country") ? $("#c-country").value.toUpperCase() : "",
+        state: $("#c-state") ? $("#c-state").value : "",
+        locality: $("#c-locality") ? $("#c-locality").value : "",
+        email: $("#c-email") ? $("#c-email").value : "",
         engine: $("#c-engine").value,
         req_id: $("#c-req").value ? +$("#c-req").value : null,
-        hsm_label: $("#c-label").value,
+        hsm_label: $("#c-label") ? $("#c-label").value : "",
       }});
       renderCsrResult(res);
-      if (res.ok) toast("CSR gerada com sucesso"); else toast("Falha na geração — veja a saída", "err");
+      if (res.ok) toast("CSR gerada com sucesso");
+      else toast("Falha na geração — veja a saída", "err");
     } catch (e) { toast(e.message, "err"); }
-    btn.disabled = false; btn.textContent = "Gerar CSR";
+    btn.disabled = false; btn.textContent = "⚙️ Gerar CSR";
   };
 
   function renderCsrResult(res) {
-    let html = `<h3>Resultado — engine ${esc(res.engine)}</h3>`;
+    let html = "<h3>Resultado — engine " + esc(res.engine) + "</h3>";
     if (res.csr_pem) {
-      html += `<div class="field"><label>CSR (cole no portal da CA)</label>
-        <textarea class="input mono" rows="12" id="r-csr" readonly>${esc(res.csr_pem)}</textarea></div>
-        <button class="btn btn-sm" id="r-copy-csr">📋 Copiar CSR</button>`;
+      html += '<div class="field"><label>CSR (cole no portal da CA)</label>' +
+        '<textarea class="input mono" rows="12" id="r-csr" readonly>' + esc(res.csr_pem) + '</textarea></div>' +
+        '<button class="btn btn-sm" id="r-copy-csr">📋 Copiar CSR</button>';
     }
     if (res.key_pem) {
-      html += `<div class="field mt"><label>⚠️ Chave privada (sem REQ vinculada, não foi salva — guarde agora!)</label>
-        <textarea class="input mono" rows="6" id="r-key" readonly>${esc(res.key_pem)}</textarea></div>
-        <button class="btn btn-sm" id="r-copy-key">📋 Copiar chave</button>`;
+      html += '<div class="field mt"><label>⚠️ Chave privada (sem REQ vinculada, não foi salva — guarde agora!)</label>' +
+        '<textarea class="input mono" rows="6" id="r-key" readonly>' + esc(res.key_pem) + '</textarea></div>' +
+        '<button class="btn btn-sm" id="r-copy-key">📋 Copiar chave</button>';
     }
     if (res.inf_content) {
-      html += `<div class="field"><label>Arquivo .inf para certreq</label>
-        <textarea class="input mono" rows="12" id="r-inf" readonly>${esc(res.inf_content)}</textarea></div>
-        <button class="btn btn-sm" id="r-copy-inf">📋 Copiar .inf</button>
-        <div class="field mt"><label>Comando (executar no servidor Windows)</label>
-        <pre class="code-block">${esc(res.command)}</pre></div>`;
+      html += '<div class="field"><label>Arquivo .inf para certreq</label>' +
+        '<textarea class="input mono" rows="12" id="r-inf" readonly>' + esc(res.inf_content) + '</textarea></div>' +
+        '<button class="btn btn-sm" id="r-copy-inf">📋 Copiar .inf</button>' +
+        '<div class="field mt"><label>Comando (executar no servidor Windows)</label>' +
+        '<pre class="code-block">' + esc(res.command) + '</pre></div>';
     }
     if (res.output && !res.csr_pem) {
-      html += `<div class="field mt"><label>Saída do comando</label>
-        <pre class="code-block">${esc(res.output)}</pre></div>`;
+      html += '<div class="field mt"><label>Saída do comando</label>' +
+        '<pre class="code-block">' + esc(res.output) + '</pre></div>';
     }
     if (res.saved) {
-      html += `<div class="muted mt">Arquivos salvos:<br>${Object.entries(res.saved)
-        .map(([k, v]) => `<span class="mono">${esc(k)}: ${esc(v)}</span>`).join("<br>")}</div>`;
+      html += '<div class="muted mt">Arquivos salvos:<br>' +
+        Object.entries(res.saved).map(([k, v]) => '<span class="mono">' + esc(k) + ": " + esc(v) + "</span>").join("<br>") +
+        '</div>';
     }
     $("#c-result").innerHTML = html;
     const bind = (btn, src, label) => { const b = $(btn); if (b) b.onclick = () => copyText($(src).value, label); };
@@ -473,51 +673,554 @@ views.csr = async () => {
   }
 };
 
+
+
+/* ---------------- Operações em Lote ---------------- */
+const BATCH_FLOWS = {
+  emissao: `flowchart TD
+    A([🟢 Abertura]) --> B[Coletar CN, SANs, ambiente]
+    B --> C[Gerar CSR — Aba Gerar CSR]
+    C --> D[Submeter à CA Sectigo/AC Interna]
+    D --> E[Download do certificado]
+    E --> F[Importar — Aba Certificados]
+    F --> G[Instalar no servidor/plataforma]
+    G --> H[Validar cadeia]
+    H --> I[Registrar local de instalação]
+    I --> J[Abrir Mudança se PRD]
+    J --> K([✅ Concluída])
+    subgraph Locais
+      L1[Mainframe RACF/ACM]
+      L2[Balanceador F5/NetScaler]
+      L3[Key Vault Azure]
+      L4[AWS Cert Manager]
+      L5[Azion / Akamai CDN]
+    end`,
+  renovacao: `flowchart TD
+    A([🔄 Renovação]) --> B[Identificar cert a vencer — Dashboard]
+    B --> C{Reutilizar chave?}
+    C -- Sim --> D[Usar CSR existente no repositório]
+    C -- Não --> E[Gerar nova CSR]
+    D --> F[Submeter à CA]
+    E --> F
+    F --> G[Instalar novo certificado]
+    G --> H[Revogar cert antigo]
+    H --> I([✅ Concluída])`,
+  revogacao: `flowchart TD
+    A([🔴 Revogação]) --> B{Motivo}
+    B -- Chave comprometida --> C[URGENTE — contatar CA imediatamente]
+    B -- Outros --> D[Identificar serial/thumbprint]
+    D --> E[Solicitar revogação à CA]
+    C --> E
+    E --> F[Verificar CRL/OCSP atualizado]
+    F --> G[Remover dos sistemas]
+    G --> H([✅ Concluída])`,
+  usuario: `flowchart TD
+    A([👤 Cert Usuário]) --> B[Identificar usuário e sistema]
+    B --> C{Tipo}
+    C -- AC Interna --> D[Emitir via ADCS / template]
+    C -- ICP-Brasil --> E[Usuário vai à AR/AC]
+    D --> F[Entregar PFX + senha segura]
+    E --> G[Usuário retira token]
+    F --> H([✅ Entregue])
+    G --> H`,
+  instalacao_existente: `flowchart TD
+    A([📦 Instalação Existente]) --> B[Receber .pfx/.pem]
+    B --> C[Importar e validar cadeia]
+    C --> D{Ambiente PRD?}
+    D -- Sim --> E[Abrir Processo de Mudança]
+    D -- Não --> F[Instalar diretamente]
+    E --> G[Instalar no horário aprovado]
+    F --> G
+    G --> H[Registrar local]
+    H --> I([✅ Concluída])`,
+  outro: `flowchart TD
+    A([📋 Demanda]) --> B[Detalhar escopo]
+    B --> C[Executar atividades]
+    C --> D[Documentar resultado]
+    D --> E([✅ Concluído])`
+};
+
+views.batch = async () => {
+  let batches = await api("/batch");
+  let currentBatch = null;
+  let flowVisible = {};
+
+  main.innerHTML =
+    '<div class="view-header"><div>' +
+    '<div class="view-title">Operações em Lote</div>' +
+    '<div class="view-sub">Gerencie múltiplas demandas simultaneamente — tabela com REQ, CN, Senha e fluxo de cada demanda</div>' +
+    '</div>' +
+    '<button class="btn btn-primary" id="b-new">＋ Novo lote</button>' +
+    '</div>' +
+    '<div class="batch-layout">' +
+    '<div class="panel batch-list-panel" id="b-list-panel"></div>' +
+    '<div class="panel batch-detail-panel" id="b-detail-panel"><div class="empty">Selecione um lote ou crie um novo.</div></div>' +
+    '</div>';
+
+  function renderBatchList() {
+    const el = document.getElementById("b-list-panel");
+    if (!batches.length) {
+      el.innerHTML = '<h3>Lotes</h3><div class="empty">Nenhum lote criado.</div>';
+      return;
+    }
+    el.innerHTML = '<h3>Lotes</h3>' +
+      batches.map(b =>
+        '<div class="batch-list-item' + (currentBatch && currentBatch.id === b.id ? " active" : "") + '" data-bid="' + b.id + '">' +
+        '<div class="batch-list-name">' + esc(b.name) + '</div>' +
+        '<div class="muted" style="font-size:11.5px">' + (b.item_count || 0) + ' demanda(s)</div>' +
+        '</div>'
+      ).join("");
+    document.querySelectorAll(".batch-list-item").forEach(el => {
+      el.onclick = () => loadBatch(+el.dataset.bid);
+    });
+  }
+
+  async function loadBatch(id) {
+    currentBatch = await api("/batch/" + id);
+    renderBatchList();
+    renderBatchDetail();
+  }
+
+  function renderBatchDetail() {
+    const el = document.getElementById("b-detail-panel");
+    if (!currentBatch) { el.innerHTML = '<div class="empty">Selecione um lote.</div>'; return; }
+    const b = currentBatch;
+
+    let html = '<div class="batch-detail-header">' +
+      '<div>' +
+      '<h3 style="margin:0;font-size:16px">' + esc(b.name) + '</h3>' +
+      '<div class="muted" style="font-size:12px">Criado em ' + fmtDate(b.created_at) + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px">' +
+      '<button class="btn btn-sm" id="b-regen-all" title="Regenerar todas as senhas">🎲 Regenerar todas as senhas</button>' +
+      '<button class="btn btn-sm btn-danger" id="b-delete">🗑️ Excluir lote</button>' +
+      '</div></div>';
+
+    // Table
+    html += '<div class="batch-table-wrap">' +
+      '<table class="tbl batch-tbl">' +
+      '<thead><tr>' +
+      '<th style="width:32px">#</th>' +
+      '<th>REQ</th>' +
+      '<th>CN</th>' +
+      '<th>Tipo de Demanda</th>' +
+      '<th>Senha</th>' +
+      '<th>Status</th>' +
+      '<th>Fluxo</th>' +
+      '<th></th>' +
+      '</tr></thead>' +
+      '<tbody id="b-tbody">' +
+      (b.items.length ? b.items.map((item, i) =>
+        '<tr data-iid="' + item.id + '">' +
+        '<td class="muted" style="font-size:12px">' + (i + 1) + '</td>' +
+        '<td><input class="input batch-cell" data-field="req_number" value="' + esc(item.req_number) + '" placeholder="REQ0012345" style="width:120px"></td>' +
+        '<td><input class="input batch-cell" data-field="cn" value="' + esc(item.cn) + '" placeholder="www.exemplo.com.br" style="min-width:200px"></td>' +
+        '<td><select class="input batch-cell" data-field="demand_type" style="width:160px">' +
+        Object.entries(DEMAND_TYPES).map(([v, l]) =>
+          '<option value="' + v + '"' + (item.demand_type === v || (!item.demand_type && v === "emissao") ? " selected" : "") + '>' + l + '</option>'
+        ).join("") +
+        '</select></td>' +
+        '<td>' +
+        '<div style="display:flex;align-items:center;gap:4px">' +
+        '<span class="password-cell batch-pwd" data-pwd="' + esc(item.password || "") + '" title="Clique para copiar">' +
+        (item.password ? "••••••••" : '<span class="muted">—</span>') + '</span>' +
+        '<button class="btn btn-sm batch-regen" data-iid="' + item.id + '" title="Regenerar senha">🎲</button>' +
+        '</div></td>' +
+        '<td><select class="input batch-cell" data-field="status" style="width:130px">' +
+        ['pendente','em_andamento','aguardando_ca','aguardando_instalacao','concluido','cancelado'].map(s =>
+          '<option value="' + s + '"' + (item.status === s ? " selected" : "") + '>' +
+          {pendente:'Pendente',em_andamento:'Em andamento',aguardando_ca:'Aguard. CA',aguardando_instalacao:'Aguard. Instalação',concluido:'Concluído',cancelado:'Cancelado'}[s] +
+          '</option>'
+        ).join("") +
+        '</select></td>' +
+        '<td><button class="btn btn-sm batch-flow" data-iid="' + item.id + '" data-dtype="' + (item.demand_type || "emissao") + '" title="Ver fluxo">🔀 Fluxo</button></td>' +
+        '<td><button class="btn btn-sm btn-danger batch-del" data-iid="' + item.id + '">✕</button></td>' +
+        '</tr>' +
+        // Flow row (hidden by default)
+        '<tr class="batch-flow-row" id="flow-row-' + item.id + '" style="display:none">' +
+        '<td colspan="8">' +
+        '<div class="batch-flow-container">' +
+        '<div class="batch-flow-header">' +
+        '<strong>Fluxo: ' + esc(DEMAND_TYPES[item.demand_type] || "Emissão") + '</strong>' +
+        '<div class="batch-flow-steps">Carregando fluxo...</div>' +
+        '</div>' +
+        '<div id="mermaid-' + item.id + '" class="mermaid-container">Carregando...</div>' +
+        '</div></td></tr>'
+      ).join("") : '<tr><td colspan="8" class="empty">Nenhuma demanda neste lote.</td></tr>') +
+      '</tbody></table></div>';
+
+    // Add item form
+    html += '<div class="batch-add-row">' +
+      '<input class="input" id="b-add-req" placeholder="REQ0012345" style="width:130px" maxlength="10">' +
+      '<input class="input" id="b-add-cn" placeholder="www.exemplo.com.br" style="flex:1">' +
+      '<select class="input" id="b-add-dtype" style="width:160px">' +
+      Object.entries(DEMAND_TYPES).map(([v, l]) => '<option value="' + v + '">' + l + '</option>').join("") +
+      '</select>' +
+      '<button class="btn btn-primary" id="b-add">＋ Adicionar</button>' +
+      '</div>';
+
+    el.innerHTML = html;
+
+    // Wire events
+    document.getElementById("b-delete").onclick = async () => {
+      if (!confirm("Excluir este lote e todos os itens?")) return;
+      await api("/batch/" + b.id, { method: "DELETE" });
+      currentBatch = null;
+      batches = await api("/batch");
+      renderBatchList();
+      document.getElementById("b-detail-panel").innerHTML = '<div class="empty">Lote excluído.</div>';
+    };
+
+    document.getElementById("b-regen-all").onclick = async () => {
+      if (!confirm("Regenerar TODAS as senhas deste lote?")) return;
+      await api("/batch/regen-all-passwords/" + b.id, { method: "POST" });
+      toast("Todas as senhas foram regeneradas");
+      await loadBatch(b.id);
+    };
+
+    document.getElementById("b-add").onclick = async () => {
+      const req = document.getElementById("b-add-req").value.trim().toUpperCase();
+      const cn = document.getElementById("b-add-cn").value.trim();
+      const dtype = document.getElementById("b-add-dtype").value;
+      if (!cn) return toast("Informe o CN", "err");
+      try {
+        await api("/batch/" + b.id + "/items", { method: "POST", json: {
+          req_number: req, cn, demand_type: dtype, auto_password: true
+        }});
+        await loadBatch(b.id);
+        toast("Demanda adicionada");
+      } catch (e) { toast(e.message, "err"); }
+    };
+
+    // Inline edit - save on blur
+    document.querySelectorAll(".batch-cell").forEach(cell => {
+      cell.addEventListener("change", async (ev) => {
+        const row = cell.closest("tr");
+        const iid = +row.dataset.iid;
+        const field = cell.dataset.field;
+        const val = cell.value;
+        try {
+          await api("/batch/" + b.id + "/items/" + iid, { method: "PUT", json: { [field]: val } });
+          // Update demand type in flow button
+          if (field === "demand_type") {
+            const btn = row.querySelector(".batch-flow");
+            if (btn) btn.dataset.dtype = val;
+          }
+        } catch (e) { toast(e.message, "err"); }
+      });
+    });
+
+    // Copy password on click
+    document.querySelectorAll(".batch-pwd").forEach(el => {
+      if (el.dataset.pwd) el.onclick = () => copyText(el.dataset.pwd, "Senha copiada!");
+    });
+
+    // Regen individual password
+    document.querySelectorAll(".batch-regen").forEach(btn => {
+      btn.onclick = async () => {
+        const iid = +btn.dataset.iid;
+        const res = await api("/batch/" + b.id + "/items/" + iid + "/regen-password", { method: "POST" });
+        toast("Senha regenerada");
+        await loadBatch(b.id);
+      };
+    });
+
+    // Delete item
+    document.querySelectorAll(".batch-del").forEach(btn => {
+      btn.onclick = async () => {
+        const iid = +btn.dataset.iid;
+        await api("/batch/" + b.id + "/items/" + iid, { method: "DELETE" });
+        await loadBatch(b.id);
+      };
+    });
+
+    // Show flow diagram
+    document.querySelectorAll(".batch-flow").forEach(btn => {
+      btn.onclick = async () => {
+        const iid = +btn.dataset.iid;
+        const dtype = btn.dataset.dtype || "emissao";
+        const flowRow = document.getElementById("flow-row-" + iid);
+        if (!flowRow) return;
+        const isVisible = flowRow.style.display !== "none";
+        // Hide all flow rows first
+        document.querySelectorAll(".batch-flow-row").forEach(r => r.style.display = "none");
+        document.querySelectorAll(".batch-flow").forEach(b2 => b2.classList.remove("active"));
+        if (!isVisible) {
+          flowRow.style.display = "";
+          btn.classList.add("active");
+          const container = document.getElementById("mermaid-" + iid);
+          if (container) {
+            const mermaidDef = BATCH_FLOWS[dtype] || BATCH_FLOWS["emissao"];
+            await renderMermaid(container, mermaidDef, dtype, iid);
+          }
+        }
+      };
+    });
+  }
+
+  async function renderMermaid(container, mermaidDef, dtype, iid) {
+    // Build tutorial steps based on demand type
+    const tutorials = {
+      emissao: [
+        { icon: "1️⃣", title: "Gerar CSR", where: "Aba 'Gerar CSR'", how: "Selecione a demanda vinculada, preencha CN + SANs + Subject DN, escolha o engine e clique em Gerar CSR." },
+        { icon: "2️⃣", title: "Submeter à CA", where: "Portal Sectigo / AC Interna / ICP", how: "Cole a CSR no portal da CA correspondente à categoria do certificado." },
+        { icon: "3️⃣", title: "Download do certificado", where: "Portal da CA", how: "Baixe o .cer/.crt emitido e salve na pasta da demanda." },
+        { icon: "4️⃣", title: "Importar no CertHub", where: "Aba 'Certificados' → Importar", how: "Importe o arquivo recebido. Os metadados são lidos automaticamente." },
+        { icon: "5️⃣", title: "Instalar no servidor", where: "Servidor de destino", how: "Siga o procedimento do local: IIS (certutil -importPFX), Apache/Nginx (ssl_certificate), Key Vault (az keyvault certificate import), AWS ACM (aws acm import-certificate), Mainframe (processo RACF/ACM)." },
+        { icon: "6️⃣", title: "Validar cadeia", where: "Aba 'Validar Cadeia'", how: "Faça upload do certificado + intermediárias e verifique se a cadeia está completa." },
+        { icon: "7️⃣", title: "Registrar instalação", where: "Aba 'Demandas' → Abrir REQ → Locais", how: "Registre o servidor, tipo de local e se há processo de mudança associado." },
+        { icon: "8️⃣", title: "Processo de Mudança", where: "Ferramenta de ITSM (ServiceNow, etc.)", how: "Para ambiente PRD, abra uma RFC/Change. A instalação deve ocorrer na janela aprovada." },
+      ],
+      renovacao: [
+        { icon: "1️⃣", title: "Identificar certificado", where: "Dashboard → Próximos vencimentos", how: "Localize certificados com vencimento em ≤ 60 dias." },
+        { icon: "2️⃣", title: "Decidir sobre a chave", where: "Análise interna", how: "Se a chave atual pode ser reutilizada, use a CSR existente. Caso contrário, gere uma nova na aba CSR." },
+        { icon: "3️⃣", title: "Submeter à CA", where: "Portal da CA", how: "Envie a CSR nova (ou existente) para emissão do novo certificado." },
+        { icon: "4️⃣", title: "Substituir nos locais", where: "Servidores de destino", how: "Instale o novo certificado em todos os locais onde o atual está instalado." },
+        { icon: "5️⃣", title: "Revogar o antigo", where: "Portal da CA ou AC Interna", how: "Solicite a revogação do certificado antigo após garantir que o novo está funcionando." },
+      ],
+      revogacao: [
+        { icon: "⚠️", title: "Avaliar urgência", where: "Análise imediata", how: "Se a chave foi comprometida, entre em contato imediato com a CA. Caso contrário, siga o processo formal." },
+        { icon: "1️⃣", title: "Identificar certificado", where: "Aba 'Certificados' → Detalhes", how: "Anote o serial e thumbprint SHA1 do certificado a revogar." },
+        { icon: "2️⃣", title: "Solicitar revogação", where: "Portal/e-mail da CA", how: "Informe o serial, motivo e documentação necessária." },
+        { icon: "3️⃣", title: "Confirmar CRL/OCSP", where: "Linha de comando", how: "Execute: certutil -verify -urlfetch cert.cer e verifique que o status aparece como revogado." },
+        { icon: "4️⃣", title: "Remover dos sistemas", where: "Servidores afetados", how: "Remova o certificado de todos os locais de instalação." },
+      ],
+      usuario: [
+        { icon: "1️⃣", title: "Identificar usuário", where: "AD / Sistema de identidade", how: "Confirme CPF, e-mail corporativo e sistemas onde o certificado será usado." },
+        { icon: "2️⃣", title: "Escolher AC emissora", where: "Análise de requisito", how: "AC Interna: para acesso a sistemas internos. ICP-Brasil: para assinatura digital com validade jurídica." },
+        { icon: "3️⃣", title: "Emitir certificado", where: "ADCS / Portal ICP", how: "Para AC Interna: emita via ADCS usando o template correto. Para ICP-Brasil: usuário deve comparecer à AR com documentos." },
+        { icon: "4️⃣", title: "Entregar com segurança", where: "Canal seguro", how: "Envie o PFX por canal criptografado e a senha por canal separado (telefone, SMS, Teams)." },
+      ],
+      instalacao_existente: [
+        { icon: "1️⃣", title: "Receber arquivos", where: "E-mail / ticket / SharePoint", how: "Solicite o .pfx ou .pem + chave privada. Verifique integridade dos arquivos recebidos." },
+        { icon: "2️⃣", title: "Validar o certificado", where: "Aba 'Validar Cadeia'", how: "Verifique se a cadeia está completa e o certificado não está vencido ou revogado." },
+        { icon: "3️⃣", title: "Abrir mudança (PRD)", where: "Ferramenta de ITSM", how: "Para ambientes PRD, abra uma RFC antes de qualquer instalação." },
+        { icon: "4️⃣", title: "Instalar no destino", where: "Servidor/plataforma alvo", how: "Siga o procedimento específico do local de instalação." },
+        { icon: "5️⃣", title: "Registrar instalação", where: "Aba 'Demandas'", how: "Registre todos os locais onde o certificado foi instalado." },
+      ],
+      outro: [
+        { icon: "1️⃣", title: "Detalhar escopo", where: "Ticket / demanda", how: "Documente claramente o que precisa ser feito." },
+        { icon: "2️⃣", title: "Executar", where: "Conforme escopo", how: "Siga as boas práticas e documente cada etapa." },
+        { icon: "3️⃣", title: "Fechar demanda", where: "CertHub + ITSM", how: "Atualize o status da demanda e feche o ticket." },
+      ],
+    };
+
+    const steps = tutorials[dtype] || tutorials["emissao"];
+    const stepsHtml = steps.map(s =>
+      '<div class="flow-step">' +
+      '<div class="flow-step-icon">' + s.icon + '</div>' +
+      '<div class="flow-step-body">' +
+      '<div class="flow-step-title">' + esc(s.title) + '</div>' +
+      '<div class="flow-step-where">📍 ' + esc(s.where) + '</div>' +
+      '<div class="flow-step-how">' + esc(s.how) + '</div>' +
+      '</div></div>'
+    ).join("");
+
+    container.innerHTML =
+      '<div class="batch-flow-inner">' +
+      '<div class="flow-steps-panel">' +
+      '<div class="flow-steps-title">📋 Passo a Passo</div>' +
+      stepsHtml +
+      '</div>' +
+      '<div class="flow-mermaid-panel">' +
+      '<div class="flow-mermaid-title">🔀 Diagrama do Fluxo</div>' +
+      '<div id="mermaid-graph-' + iid + '" class="mermaid-graph"></div>' +
+      '</div>' +
+      '</div>';
+
+    // Render mermaid
+    if (window.mermaid) {
+      try {
+        const graphEl = document.getElementById("mermaid-graph-" + iid);
+        if (graphEl) {
+          const { svg } = await mermaid.render("mermaid-svg-" + iid, mermaidDef);
+          graphEl.innerHTML = svg;
+        }
+      } catch (e) {
+        const graphEl = document.getElementById("mermaid-graph-" + iid);
+        if (graphEl) graphEl.innerHTML = '<div class="muted">Erro ao renderizar diagrama: ' + esc(e.message) + '</div>';
+      }
+    } else {
+      const graphEl = document.getElementById("mermaid-graph-" + iid);
+      if (graphEl) graphEl.innerHTML = '<div class="muted">Mermaid.js não carregado. Adicione a biblioteca no index.html.</div>';
+    }
+  }
+
+  document.getElementById("b-new").onclick = async () => {
+    const name = prompt("Nome do lote (ex: Renovações Julho 2026):");
+    if (!name) return;
+    const b = await api("/batch", { method: "POST", json: { name } });
+    batches = await api("/batch");
+    renderBatchList();
+    await loadBatch(b.id);
+    toast("Lote criado: " + name);
+  };
+
+  renderBatchList();
+  if (batches.length) await loadBatch(batches[0].id);
+};
+
+/* ---------------- CSR Decoder ---------------- */
+views.csrdecoder = async () => {
+  const reqs = await api("/reqs");
+  let decoded = null;
+  main.innerHTML = `
+    <div class="view-header"><div>
+      <div class="view-title">CSR Decoder</div>
+      <div class="view-sub">Decodifique uma CSR e guarde no repositório para consulta</div>
+    </div></div>
+    <div class="grid grid-2">
+      <div class="panel">
+        <div class="field"><label>Arquivo .csr / .pem (opcional — preenche o campo abaixo)</label>
+          <input class="input" type="file" id="dc-file" accept=".csr,.pem,.req,.txt"></div>
+        <div class="field"><label>CSR em PEM</label>
+          <textarea class="input mono" id="dc-pem" rows="11"
+            placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea></div>
+        <button class="btn btn-primary" id="dc-go">🔍 Decodificar</button>
+        <div id="dc-result" class="mt"></div>
+      </div>
+      <div class="panel">
+        <h3>Repositório de CSRs</h3>
+        <div id="dc-list"></div>
+      </div>
+    </div>`;
+
+  async function loadList() {
+    const rows = await api("/csrs");
+    $("#dc-list").innerHTML = rows.length ? `
+      <table class="tbl"><thead><tr>
+        <th>CN</th><th>Chave</th><th>REQ</th><th>Criada</th><th></th>
+      </tr></thead><tbody>${rows.map(s => `
+        <tr>
+          <td title="${esc(s.subject)}">${esc(s.cn)}</td>
+          <td class="muted">${esc(s.key_type)}</td>
+          <td class="mono">${esc(s.req_number || "—")} ${s.env ? envBadge(s.env) : ""}</td>
+          <td>${fmtDate(s.created_at)}</td>
+          <td style="white-space:nowrap">
+            <button class="btn btn-sm" data-copy-pem="${s.id}" title="Copiar PEM">📋</button>
+            <button class="btn btn-sm btn-danger" data-del-csr="${s.id}">✕</button>
+          </td>
+        </tr>`).join("")}</tbody></table>`
+      : `<div class="empty">Nenhuma CSR guardada ainda.</div>`;
+    $$("[data-copy-pem]").forEach(el => el.onclick = () =>
+      copyText(rows.find(s => s.id === +el.dataset.copyPem).pem, "PEM copiado!"));
+    $$("[data-del-csr]").forEach(el => el.onclick = async () => {
+      if (!confirm("Remover esta CSR do repositório?")) return;
+      await api(`/csrs/${el.dataset.delCsr}`, { method: "DELETE" });
+      toast("CSR removida"); loadList();
+    });
+  }
+
+  $("#dc-file").onchange = async () => {
+    const f = $("#dc-file").files[0];
+    if (f) $("#dc-pem").value = await f.text();
+  };
+  $("#dc-go").onclick = async () => {
+    try {
+      decoded = await api("/csr/decode", { method: "POST", json: { pem: $("#dc-pem").value } });
+    } catch (e) { decoded = null; $("#dc-result").innerHTML = ""; return toast(e.message, "err"); }
+    const row = (k, v, mono) => `<tr><th style="width:120px">${k}</th>
+      <td class="${mono ? "mono" : ""}">${esc(v || "—")}</td></tr>`;
+    $("#dc-result").innerHTML = `
+      <table class="tbl">
+        ${row("CN", decoded.cn)}${row("Subject", decoded.subject, 1)}
+        ${row("SANs", decoded.sans)}${row("Chave", decoded.key_type)}
+        ${row("Hash", decoded.sig_algo)}
+        <tr><th>Assinatura</th><td><span class="badge badge-days-${decoded.signature_valid ? "ok" : "danger"}">
+          ${decoded.signature_valid ? "válida ✓" : "INVÁLIDA ✗"}</span></td></tr>
+      </table>
+      <div class="form-row mt">
+        <div class="field" style="margin:0"><select class="input" id="dc-req">
+          <option value="">— sem demanda —</option>
+          ${reqs.map(r => `<option value="${r.id}">${esc(r.req_number)} · ${esc(r.cn)} (${r.env})</option>`).join("")}
+        </select></div>
+        <button class="btn btn-primary" id="dc-save">＋ Adicionar ao repositório</button>
+      </div>`;
+    $("#dc-save").onclick = async () => {
+      try {
+        await api("/csrs", { method: "POST", json: {
+          pem: decoded.pem, req_id: $("#dc-req").value ? +$("#dc-req").value : null,
+        }});
+        toast("CSR adicionada ao repositório"); loadList();
+      } catch (e) { toast(e.message, "err"); }
+    };
+  };
+  await loadList();
+};
+
 /* ---------------- Certificados ---------------- */
+const CERT_TYPE_LABEL = {
+  servidor: "Servidor TLS", cliente_mtls: "Cliente mTLS",
+  ambos: "Servidor + Cliente", ca: "CA", "": "—",
+};
+const certTypeBadge = t => t
+  ? `<span class="badge badge-tipo-${esc(t)}">${esc(CERT_TYPE_LABEL[t] || t)}</span>`
+  : `<span class="muted">—</span>`;
+
 views.certs = async () => {
   main.innerHTML = `
     <div class="view-header"><div>
       <div class="view-title">Certificados</div>
       <div class="view-sub">Importe um arquivo e os dados são lidos automaticamente</div>
     </div>
-    <button class="btn btn-primary" id="cert-import">⬆ Importar certificado</button></div>
+    <div class="toolbar">
+      <button class="btn" id="cert-relink" title="Recalcular vínculos entre certificados e emissores">🔗 Revincular cadeias</button>
+      <button class="btn btn-primary" id="cert-import">⬆ Importar certificado</button>
+    </div></div>
     <div class="panel">
       <div class="toolbar" style="margin-bottom:12px">
-        <input class="input" id="cf-search" placeholder="Buscar CN, SAN, emissor, REQ…" style="min-width:240px">
+        <input class="input" id="cf-search" placeholder="Buscar CN, SAN, emissor, REQ…" style="min-width:220px">
         <select class="input" id="cf-exp">
-          <option value="">Todos</option>
+          <option value="">Validade</option>
           <option value="0">Vencidos</option>
           <option value="30">Vencem em ≤ 30d</option>
           <option value="60">Vencem em ≤ 60d</option>
           <option value="90">Vencem em ≤ 90d</option>
         </select>
+        <select class="input" id="cf-type">
+          <option value="">Tipo</option>
+          ${["servidor", "cliente_mtls", "ambos", "ca"].map(t =>
+            `<option value="${t}">${CERT_TYPE_LABEL[t]}</option>`).join("")}
+        </select>
+        <select class="input" id="cf-issuer"><option value="">Emissor</option></select>
       </div>
       <div id="cert-table"></div>
     </div>`;
 
+  let issuerSel = "";
   async function load() {
-    const params = new URLSearchParams({ search: $("#cf-search").value });
+    const params = new URLSearchParams({
+      search: $("#cf-search").value,
+      cert_type: $("#cf-type").value,
+      issuer_cn: issuerSel,
+    });
     if ($("#cf-exp").value !== "") params.set("expiring_days", $("#cf-exp").value);
-    const rows = await api("/certs?" + params);
+    const data = await api("/certs?" + params);
+    const rows = data.certs;
+    $("#cf-issuer").innerHTML = `<option value="">Emissor</option>` +
+      data.issuers.map(i => `<option value="${esc(i)}" ${i === issuerSel ? "selected" : ""}>${esc(i)}</option>`).join("");
+
     $("#cert-table").innerHTML = rows.length ? `
       <table class="tbl"><thead><tr>
-        <th>CN</th><th>REQ</th><th>Validade</th><th></th><th>Chave</th><th>Emissor</th><th></th>
+        <th>CN</th><th>Tipo</th><th>REQ</th><th>Validade</th><th></th><th>Emissor</th><th></th>
       </tr></thead><tbody>${rows.map(c => `
         <tr>
-          <td>${esc(c.cn)}</td>
+          <td>${esc(c.cn)} ${c.issued_count ? `<span class="badge k-cat" title="Certificados emitidos por esta CA no repositório">emite ${c.issued_count}</span>` : ""}</td>
+          <td>${certTypeBadge(c.cert_type)}</td>
           <td class="mono">${esc(c.req_number || "—")} ${c.env ? envBadge(c.env) : ""}</td>
           <td>${fmtDate(c.not_before)} → <strong>${fmtDate(c.not_after)}</strong></td>
           <td>${daysBadge(c.days_left)}</td>
-          <td class="muted">${esc(c.key_type || "")}</td>
-          <td class="muted" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.issuer || "")}</td>
+          <td class="muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              title="${esc(c.issuer || "")}">
+            ${c.parent_cn ? `<span title="Emissor presente no repositório — cadeia vinculada">🔗</span> ` : ""}${esc(c.issuer_cn || c.issuer || "")}</td>
           <td style="white-space:nowrap">
             <button class="btn btn-sm" data-detail="${c.id}">Detalhes</button>
             <button class="btn btn-sm btn-danger" data-del="${c.id}">✕</button>
           </td>
         </tr>`).join("")}</tbody></table>`
-      : `<div class="empty">Nenhum certificado. Importe o primeiro!</div>`;
+      : `<div class="empty">Nenhum certificado encontrado.</div>`;
     $$("[data-detail]").forEach(el => el.onclick = () =>
-      certDetail(rows.find(c => c.id === +el.dataset.detail)));
+      certDetail(rows.find(c => c.id === +el.dataset.detail), load));
     $$("[data-del]").forEach(el => el.onclick = async () => {
       if (!confirm("Remover este certificado do registro?")) return;
       await api(`/certs/${el.dataset.del}`, { method: "DELETE" });
@@ -525,26 +1228,49 @@ views.certs = async () => {
     });
   }
   $("#cf-search").oninput = () => { clearTimeout(window._t2); window._t2 = setTimeout(load, 300); };
-  $("#cf-exp").onchange = load;
+  $("#cf-exp").onchange = $("#cf-type").onchange = load;
+  $("#cf-issuer").onchange = () => { issuerSel = $("#cf-issuer").value; load(); };
   $("#cert-import").onclick = () => importCertModal(load);
+  $("#cert-relink").onclick = async () => {
+    const res = await api("/certs/relink", { method: "POST" });
+    toast(`${res.total} certificados revisados · ${res.linked} vínculos de cadeia`);
+    load();
+  };
   await load();
 };
 
-function certDetail(c) {
+function certDetail(c, onDone) {
   if (!c) return;
   const row = (k, v, mono) => `<tr><th style="width:140px">${k}</th><td class="${mono ? "mono" : ""}">${esc(v || "—")}</td></tr>`;
   modal("Detalhes do certificado", `
     <table class="tbl">
       ${row("CN", c.cn)}${row("SANs", c.sans)}${row("Subject", c.subject, 1)}
-      ${row("Emissor", c.issuer, 1)}${row("Serial", c.serial, 1)}
+      ${row("Emissor", c.issuer, 1)}
+      <tr><th>Cadeia</th><td>${c.parent_cn
+        ? `🔗 emitido por <strong>${esc(c.parent_cn)}</strong> (no repositório)`
+        : `emissor <strong>${esc(c.issuer_cn || "?")}</strong> não está no repositório — importe a CA e use "Revincular cadeias"`}</td></tr>
+      ${row("Serial", c.serial, 1)}
       ${row("Thumbprint SHA1", c.thumbprint_sha1, 1)}
       ${row("Válido de", fmtDateTime(c.not_before))}${row("Válido até", fmtDateTime(c.not_after))}
       ${row("Chave", c.key_type)}${row("Arquivo", c.file_path, 1)}
       ${row("REQ", c.req_number)}
     </table>
-    <button class="btn btn-sm mt" id="cd-copy-thumb">📋 Copiar thumbprint</button>
+    <div class="form-row mt">
+      <div class="field" style="margin:0"><label>Tipo</label>
+        <select class="input" id="cd-type">
+          <option value="">— não classificado —</option>
+          ${["servidor", "cliente_mtls", "ambos", "ca"].map(t =>
+            `<option value="${t}" ${c.cert_type === t ? "selected" : ""}>${CERT_TYPE_LABEL[t]}</option>`).join("")}
+        </select></div>
+      <button class="btn" id="cd-save-type" style="align-self:flex-end">Salvar tipo</button>
+      <button class="btn" id="cd-copy-thumb" style="align-self:flex-end">📋 Thumbprint</button>
+    </div>
   `, { large: true });
   $("#cd-copy-thumb").onclick = () => copyText(c.thumbprint_sha1 || "", "Thumbprint copiado!");
+  $("#cd-save-type").onclick = async () => {
+    await api(`/certs/${c.id}`, { method: "PUT", json: { cert_type: $("#cd-type").value } });
+    closeModal(); toast("Tipo atualizado"); onDone && onDone();
+  };
 }
 
 async function importCertModal(onDone) {
@@ -609,11 +1335,16 @@ views.passwords = async () => {
       exclude_ambiguous: $("#p-amb").checked,
     }});
     $("#p-result").className = "";
-    $("#p-result").innerHTML = res.passwords.map(p => `
+    $("#p-result").innerHTML = `
+      <div style="display:flex;justify-content:flex-end;margin-bottom:4px">
+        <button class="btn btn-sm" id="p-copy-all">📋 Copiar todas</button></div>` +
+      res.passwords.map(p => `
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
         <span class="mono" style="font-size:15px">${esc(p)}</span>
         <button class="btn btn-sm" data-copy="${esc(p)}">📋</button>
       </div>`).join("");
+    $("#p-copy-all").onclick = () =>
+      copyText(res.passwords.join("\n"), `${res.passwords.length} senhas copiadas!`);
     $$("[data-copy]", $("#p-result")).forEach(el =>
       el.onclick = () => copyText(el.dataset.copy, "Senha copiada!"));
   };
@@ -747,7 +1478,58 @@ views.settings = async () => {
           ${["local", "certreq", "hsmutil"].map(e =>
             `<option ${s.csr_default_engine === e ? "selected" : ""}>${e}</option>`).join("")}
         </select></div>
+    </div>
+
+    <div class="panel">
+      <h3>Templates de resposta</h3>
+      <div class="muted" style="margin-bottom:10px">
+        Placeholders preenchidos com os dados da demanda: <code>{req}</code> <code>{cn}</code>
+        <code>{env}</code> <code>{status}</code> <code>{senha}</code> <code>{vencimento}</code>
+        <code>{emissor}</code> <code>{sans}</code> <code>{serial}</code> <code>{thumbprint}</code>
+        <code>{locais}</code> <code>{notas}</code> <code>{data}</code></div>
+      <div id="tpl-list"></div>
+      <button class="btn btn-sm mt" id="tpl-new">＋ Novo template</button>
     </div>`;
+
+  async function loadTpls() {
+    const tpls = await api("/templates");
+    $("#tpl-list").innerHTML = tpls.length ? tpls.map(t => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
+        <div><strong>${esc(t.name)}</strong>
+          <span class="muted">· atualizado ${fmtDateTime(t.updated_at)}</span></div>
+        <span><button class="btn btn-sm" data-tpl-edit="${t.id}">✏️ Editar</button>
+        <button class="btn btn-sm btn-danger" data-tpl-del="${t.id}">✕</button></span>
+      </div>`).join("") : `<div class="muted">Nenhum template.</div>`;
+    $$("[data-tpl-edit]").forEach(el => el.onclick = () =>
+      tplModal(tpls.find(t => t.id === +el.dataset.tplEdit), loadTpls));
+    $$("[data-tpl-del]").forEach(el => el.onclick = async () => {
+      const t = tpls.find(x => x.id === +el.dataset.tplDel);
+      if (!confirm(`Excluir o template "${t.name}"?`)) return;
+      await api(`/templates/${t.id}`, { method: "DELETE" });
+      toast("Template excluído"); loadTpls();
+    });
+  }
+
+  function tplModal(t, onDone) {
+    modal(t ? "Editar template" : "Novo template", `
+      <div class="field"><label>Nome</label>
+        <input class="input" id="tp-name" value="${t ? esc(t.name) : ""}"></div>
+      <div class="field"><label>Conteúdo — use {req} {cn} {env} {senha} {vencimento} {locais} etc.</label>
+        <textarea class="input mono" id="tp-content" rows="14">${t ? esc(t.content) : ""}</textarea></div>
+    `, { large: true, footer: `<button class="btn" data-close>Cancelar</button>
+        <button class="btn btn-primary" id="tp-save">Salvar</button>` });
+    $("#tp-save").onclick = async () => {
+      const body = { name: $("#tp-name").value, content: $("#tp-content").value };
+      try {
+        if (t) await api(`/templates/${t.id}`, { method: "PUT", json: body });
+        else await api("/templates", { method: "POST", json: body });
+        closeModal(); toast("Template salvo"); onDone && onDone();
+      } catch (e) { toast(e.message, "err"); }
+    };
+  }
+
+  $("#tpl-new").onclick = () => tplModal(null, loadTpls);
+  await loadTpls();
 
   $("#s-save").onclick = async () => {
     try {
@@ -772,15 +1554,286 @@ views.settings = async () => {
   };
 };
 
+/* ---------------- Validar cadeia ---------------- */
+views.validate = async () => {
+  main.innerHTML = `
+    <div class="view-header"><div>
+      <div class="view-title">Validar cadeia</div>
+      <div class="view-sub">Análise elo a elo: assinaturas, validade, hostname e cadeia completa</div>
+    </div></div>
+    <div class="grid grid-2">
+      <div>
+        <div class="panel">
+          <h3>Arquivos locais</h3>
+          <div class="field"><label>Certificado + intermediárias (.cer .crt .pem .der .p7b — selecione vários)</label>
+            <input class="input" type="file" id="v-files" multiple accept=".cer,.crt,.pem,.der,.p7b"></div>
+          <div class="field"><label>Hostname a conferir (opcional)</label>
+            <input class="input" id="v-host" placeholder="www.exemplo.com.br"></div>
+          <div class="checkbox-row"><input type="checkbox" id="v-aia">
+            <label for="v-aia" style="margin:0">Baixar intermediárias faltantes via AIA (requer acesso à URL da CA)</label></div>
+          <button class="btn btn-primary" id="v-go">🔗 Validar cadeia</button>
+        </div>
+        <div class="panel">
+          <h3>Servidor remoto (TLS)</h3>
+          <div class="form-row">
+            <div class="field" style="flex:3"><label>Host</label>
+              <input class="input" id="v-rhost" placeholder="intranet.exemplo.com.br"></div>
+            <div class="field"><label>Porta</label>
+              <input class="input" id="v-rport" type="number" value="443"></div>
+          </div>
+          <button class="btn btn-primary" id="v-rgo">🌐 Consultar servidor</button>
+        </div>
+      </div>
+      <div class="panel" id="v-result"><h3>Resultado</h3>
+        <div class="empty">Envie arquivos ou consulte um servidor.</div></div>
+    </div>`;
+
+  const VERDICT = {
+    valida: ["✅", "Cadeia válida e completa até a raiz"],
+    incompleta: ["⚠️", "Elos válidos, mas a cadeia não chega a uma raiz autoassinada"],
+    invalida: ["❌", "Cadeia inválida — há elo quebrado ou certificado fora da validade"],
+  };
+
+  function renderResult(res) {
+    const [icon, label] = VERDICT[res.verdict] || ["❓", res.verdict];
+    let html = `<h3>Resultado${res.server ? ` — ${esc(res.server)}` : ""}</h3>
+      <div class="verdict ${esc(res.verdict)}">${icon} ${esc(label)}</div>`;
+    if (res.tls) html += `<div class="chips" style="margin-bottom:10px">
+      <span class="badge k-cat">${esc(res.tls.version || "")}</span>
+      <span class="badge k-cat">${esc(res.tls.cipher || "")}</span></div>`;
+    if (res.hostname) html += `<div class="chips" style="margin-bottom:10px">
+      <span class="badge badge-days-${res.hostname_ok ? "ok" : "danger"}">
+        hostname ${esc(res.hostname)}: ${res.hostname_ok ? "confere ✓" : "NÃO confere ✗"}</span></div>`;
+
+    html += res.chain.map((c, i) => {
+      const bad = c.sig_ok === false || c.expired || c.not_yet_valid;
+      const kind = i === 0 ? "📄 Certificado final" : c.self_signed ? "🏛️ Raiz (autoassinada)" : "🔗 Intermediária";
+      const sig = c.self_signed
+        ? (c.sig_ok ? "autoassinatura válida ✓" : "autoassinatura inválida ✗")
+        : c.sig_ok === null ? "emissor não fornecido"
+        : c.sig_ok ? `assinatura de "${esc(c.issuer_cn)}" válida ✓` : `assinatura inválida ✗ ${esc(c.sig_error)}`;
+      return `${i > 0 ? `<div class="chain-arrow">▲ assinado por</div>` : ""}
+        <div class="chain-link ${bad ? "bad" : ""}">
+          <div class="k-meta"><span class="badge ${bad ? "badge-days-danger" : "badge-days-ok"}">${kind}</span>
+            ${daysBadge(c.days_left)} ${c.is_ca ? `<span class="badge k-cat">CA</span>` : ""}</div>
+          <div class="k-title">${esc(c.cn)}</div>
+          <div class="muted">${fmtDate(c.not_before.slice(0, 10))} → ${fmtDate(c.not_after.slice(0, 10))}
+            · ${esc(c.key)} · ${esc(c.sig_algo)}</div>
+          <div class="muted">${sig}</div>
+          ${c.sans.length ? `<div class="muted">SANs: ${esc(c.sans.join(", "))}</div>` : ""}
+          <div class="muted mono" style="font-size:11px">serial ${esc(c.serial)}</div>
+        </div>`;
+    }).join("");
+
+    if (res.missing) {
+      html += `<div class="chain-arrow">▲ assinado por</div>
+        <div class="chain-link bad"><div class="k-title">❓ ${esc(res.missing.issuer)}</div>
+        <div class="muted">Emissor não fornecido.${res.missing.aia_url
+          ? ` Disponível via AIA: <span class="mono">${esc(res.missing.aia_url)}</span> — marque a opção AIA e valide de novo.`
+          : ""}</div></div>`;
+    }
+    if (res.warnings.length) html += `<div class="mt">${res.warnings.map(w =>
+      `<div class="muted">⚠️ ${esc(w)}</div>`).join("")}</div>`;
+    $("#v-result").innerHTML = html;
+  }
+
+  $("#v-go").onclick = async () => {
+    const files = $("#v-files").files;
+    if (!files.length) return toast("Selecione ao menos um arquivo", "err");
+    const fd = new FormData();
+    [...files].forEach(f => fd.append("files", f));
+    fd.append("hostname", $("#v-host").value);
+    fd.append("fetch_aia", $("#v-aia").checked);
+    const btn = $("#v-go"); btn.disabled = true;
+    try { renderResult(await api("/validate/chain", { method: "POST", body: fd })); }
+    catch (e) { toast(e.message, "err"); }
+    btn.disabled = false;
+  };
+  $("#v-rgo").onclick = async () => {
+    if (!$("#v-rhost").value.trim()) return toast("Informe o host", "err");
+    const btn = $("#v-rgo"); btn.disabled = true; btn.textContent = "Consultando…";
+    try {
+      renderResult(await api("/validate/remote", { method: "POST", json: {
+        host: $("#v-rhost").value, port: +$("#v-rport").value || 443,
+        fetch_aia: $("#v-aia") ? $("#v-aia").checked : false,
+      }}));
+    } catch (e) { toast(e.message, "err"); }
+    btn.disabled = false; btn.textContent = "🌐 Consultar servidor";
+  };
+};
+
+/* ---------------- Analytics ---------------- */
+const PALETTE = ["var(--accent)", "var(--green)", "var(--amber)", "var(--purple)",
+                 "var(--teal)", "var(--red)", "var(--gray)"];
+const fmtMonth = m => m ? `${m.slice(5, 7)}/${m.slice(2, 4)}` : "";
+
+function chartVBars(items, { fmt = l => l, color = "var(--accent)" } = {}) {
+  if (!items.length) return `<div class="empty">Sem dados</div>`;
+  const max = Math.max(...items.map(i => i.n), 1);
+  return `<div class="chart-vbars">${items.map(i => `
+    <div class="vbar-col" title="${esc(i.label)}: ${i.n}">
+      <div class="vbar-val">${i.n || ""}</div>
+      <div class="vbar" style="height:${Math.round(i.n / max * 120) + 2}px;background:${color}"></div>
+      <div class="vbar-label">${esc(fmt(i.label))}</div>
+    </div>`).join("")}</div>`;
+}
+
+function chartHBars(items, colorOf = (i, idx) => PALETTE[idx % PALETTE.length]) {
+  if (!items.length) return `<div class="empty">Sem dados</div>`;
+  const max = Math.max(...items.map(i => i.n), 1);
+  return items.map((i, idx) => `
+    <div class="hbar-row">
+      <div class="hbar-label" title="${esc(i.label)}">${esc(i.label)}</div>
+      <div class="hbar-track"><div class="hbar"
+        style="width:${Math.max(i.n / max * 100, 2)}%;background:${colorOf(i, idx)}"></div></div>
+      <div class="hbar-val">${i.n}</div>
+    </div>`).join("");
+}
+
+function chartDonut(items) {
+  const data = items.filter(i => i.n > 0);
+  const total = data.reduce((s, i) => s + i.n, 0);
+  if (!total) return `<div class="empty">Sem dados</div>`;
+  let acc = 0;
+  const stops = data.map((i, idx) => {
+    const from = acc / total * 360; acc += i.n;
+    return `${i.color || PALETTE[idx % PALETTE.length]} ${from}deg ${acc / total * 360}deg`;
+  });
+  return `<div class="donut-wrap">
+    <div class="donut" style="background:conic-gradient(${stops.join(",")})">
+      <div class="donut-hole">${total}</div></div>
+    <div class="donut-legend">${data.map((i, idx) => `
+      <div><span class="dot" style="background:${i.color || PALETTE[idx % PALETTE.length]}"></span>
+        ${esc(i.label)} <strong>${i.n}</strong></div>`).join("")}</div>
+  </div>`;
+}
+
+views.analytics = async () => {
+  const a = await api("/analytics");
+  const ENV_COLOR = { PRD: "var(--red)", TQS: "var(--amber)", HMP: "var(--accent)", DES: "var(--green)" };
+  const health = [
+    { label: "Vencidos", n: a.cert_health.vencidos, color: "var(--red)" },
+    { label: "≤ 30 dias", n: a.cert_health.ate_30, color: "var(--amber)" },
+    { label: "31–90 dias", n: a.cert_health.ate_90, color: "var(--accent)" },
+    { label: "> 90 dias", n: a.cert_health.ok, color: "var(--green)" },
+  ];
+  const lanes = LANES.map(([lane, label]) => {
+    const parts = { alta: 0, media: 0, baixa: 0 };
+    a.tasks_by_lane.filter(r => r.lane === lane).forEach(r => parts[r.priority] = r.n);
+    return { label, parts, total: parts.alta + parts.media + parts.baixa };
+  });
+  const laneMax = Math.max(...lanes.map(l => l.total), 1);
+  const PRIO_COLOR = { alta: "var(--red)", media: "var(--amber)", baixa: "var(--gray)" };
+  const lanesHtml = lanes.map(l => `
+    <div class="hbar-row">
+      <div class="hbar-label">${l.label}</div>
+      <div class="hbar-track">${Object.entries(l.parts).map(([p, n]) => n
+        ? `<div class="hbar" style="width:${n / laneMax * 100}%;background:${PRIO_COLOR[p]}" title="${p}: ${n}"></div>` : "").join("")}</div>
+      <div class="hbar-val">${l.total}</div>
+    </div>`).join("");
+
+  main.innerHTML = `
+    <div class="view-header"><div>
+      <div class="view-title">Analytics</div>
+      <div class="view-sub">Visão consolidada de certificados, demandas e tarefas</div>
+    </div></div>
+    <div class="grid grid-2">
+      <div class="panel"><h3>Saúde dos certificados</h3>${chartDonut(health)}</div>
+      <div class="panel"><h3>Vencimentos — próximos 12 meses</h3>
+        ${chartVBars(a.expiring_by_month.map(r => ({ label: r.month, n: r.n })), { fmt: fmtMonth, color: "var(--amber)" })}</div>
+      <div class="panel"><h3>Demandas por status</h3>
+        ${chartDonut(STATUSES.map((s, i) => ({ label: STATUS_LABEL[s], n: a.by_status[s] || 0, color: PALETTE[i % PALETTE.length] })))}</div>
+      <div class="panel"><h3>Demandas por ambiente</h3>
+        ${chartDonut(ENVS.map(e => ({ label: e, n: a.by_env[e] || 0, color: ENV_COLOR[e] })))}</div>
+      <div class="panel"><h3>Demandas criadas por mês</h3>
+        ${chartVBars(a.reqs_by_month.map(r => ({ label: r.month, n: r.n })), { fmt: fmtMonth })}</div>
+      <div class="panel"><h3>Kanban — tarefas por coluna
+        <span class="muted" style="text-transform:none">(🔴 alta · 🟡 média · ⚪ baixa)</span></h3>${lanesHtml}</div>
+      <div class="panel"><h3>Tipos de chave</h3>
+        ${chartHBars(a.key_types.map(r => ({ label: r.label, n: r.n })))}</div>
+      <div class="panel"><h3>Principais emissores</h3>
+        ${chartHBars(a.issuers.map(r => ({ label: r.label, n: r.n })))}</div>
+      <div class="panel"><h3>Atividade — últimos 30 dias</h3>
+        ${chartVBars(a.activity_by_day.map(r => ({ label: r.day, n: r.n })), { fmt: d => d.slice(8), color: "var(--teal)" })}</div>
+    </div>`;
+};
+
+/* ---------------- Aparência ---------------- */
+const ACCENTS = [
+  ["blue", "#3b6ef6"], ["green", "#1f9d63"], ["purple", "#7a4fd4"],
+  ["teal", "#0e8f96"], ["amber", "#b97e0a"], ["red", "#d4384c"],
+];
+
+views.appearance = async () => {
+  const cur = () => ({
+    theme: document.documentElement.dataset.theme,
+    layout: document.documentElement.dataset.layout || "side",
+    accent: document.documentElement.dataset.accent || "blue",
+  });
+  main.innerHTML = `
+    <div class="view-header"><div>
+      <div class="view-title">Aparência</div>
+      <div class="view-sub">Preferências visuais — salvas neste navegador</div>
+    </div></div>
+    <div class="panel"><h3>Tema</h3>
+      <div class="appearance-grid">
+        <div class="app-opt" data-set="theme" data-val="light"><div class="opt-icon">🌞</div>Claro</div>
+        <div class="app-opt" data-set="theme" data-val="dark"><div class="opt-icon">🌙</div>Escuro</div>
+      </div></div>
+    <div class="panel"><h3>Posição do menu</h3>
+      <div class="appearance-grid">
+        <div class="app-opt" data-set="layout" data-val="side"><div class="opt-icon">◧</div>Lateral</div>
+        <div class="app-opt" data-set="layout" data-val="compact"><div class="opt-icon">▮</div>Compacto (só ícones)</div>
+        <div class="app-opt" data-set="layout" data-val="top"><div class="opt-icon">⬒</div>Horizontal</div>
+      </div></div>
+    <div class="panel"><h3>Cor de destaque</h3>
+      <div class="appearance-grid">
+        ${ACCENTS.map(([name, hex]) => `
+          <div class="swatch" data-set="accent" data-val="${name}" title="${name}"
+               style="background:${hex}"></div>`).join("")}
+      </div></div>`;
+
+  function refresh() {
+    const c = cur();
+    $$("[data-set]").forEach(el =>
+      el.classList.toggle("active", c[el.dataset.set] === el.dataset.val));
+  }
+  $$("[data-set]").forEach(el => el.onclick = () => {
+    const { set, val } = el.dataset;
+    if (set === "theme") applyTheme(val);
+    if (set === "layout") applyLayout(val);
+    if (set === "accent") applyAccent(val);
+    refresh();
+  });
+  refresh();
+};
+
 /* ---------------- tema ---------------- */
 const themeBtn = $("#theme-toggle");
+const collapseBtn = $("#menu-collapse");
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
   localStorage.setItem("certhub-theme", t);
-  themeBtn.textContent = t === "dark" ? "☀️ Tema claro" : "🌙 Tema escuro";
+  themeBtn.innerHTML = t === "dark"
+    ? `☀️<span class="nav-txt"> Tema claro</span>`
+    : `🌙<span class="nav-txt"> Tema escuro</span>`;
+}
+function applyLayout(l) {
+  document.documentElement.dataset.layout = l;
+  localStorage.setItem("certhub-layout", l);
+  collapseBtn.textContent = l === "compact" ? "⇥" : "⇤";
+  collapseBtn.title = l === "compact" ? "Expandir menu" : "Recolher menu";
+}
+collapseBtn.onclick = () =>
+  applyLayout(document.documentElement.dataset.layout === "compact" ? "side" : "compact");
+function applyAccent(a) {
+  document.documentElement.dataset.accent = a;
+  localStorage.setItem("certhub-accent", a);
 }
 themeBtn.onclick = () =>
   applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 applyTheme(localStorage.getItem("certhub-theme") || "dark");
+applyLayout(localStorage.getItem("certhub-layout") || "side");
+applyAccent(localStorage.getItem("certhub-accent") || "blue");
 
 navigate();

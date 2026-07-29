@@ -20,6 +20,7 @@ class ReqIn(BaseModel):
     notes: str = ""
     password: str | None = None
     auto_password: bool = True
+    demand_type: str = "emissao"
 
 
 class ReqUpdate(BaseModel):
@@ -28,6 +29,7 @@ class ReqUpdate(BaseModel):
     notes: str | None = None
     password: str | None = None
     status: str | None = None
+    demand_type: str | None = None
 
 
 class LocationIn(BaseModel):
@@ -75,8 +77,8 @@ def create_req(body: ReqIn):
     password = body.password or (_auto_password(conn) if body.auto_password else None)
     try:
         cur = conn.execute(
-            "INSERT INTO reqs (req_number, cn, env, password, notes) VALUES (?,?,?,?,?)",
-            (req_number, body.cn.strip(), body.env, password, body.notes),
+            "INSERT INTO reqs (req_number, cn, env, password, notes, demand_type) VALUES (?,?,?,?,?,?)",
+            (req_number, body.cn.strip(), body.env, password, body.notes, body.demand_type),
         )
     except Exception:
         conn.close()

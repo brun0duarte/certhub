@@ -3,7 +3,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
-from cryptography.x509.oid import ExtensionOID, NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, ExtensionOID, NameOID
 
 
 def parse_certificate(data: bytes, filename: str = "", password: str | None = None) -> dict:
@@ -53,10 +53,36 @@ def _extract(cert: x509.Certificate) -> dict:
     else:
         key_type = type(pub).__name__
 
+    # classificação automática: CA (basicConstraints) ou uso TLS (EKU)
+    try:
+        is_ca = cert.extensions.get_extension_for_oid(
+            ExtensionOID.BASIC_CONSTRAINTS).value.ca
+    except x509.ExtensionNotFound:
+        is_ca = False
+    server_auth = client_auth = False
+    try:
+        eku = cert.extensions.get_extension_for_oid(ExtensionOID.EXTENDED_KEY_USAGE).value
+        server_auth = ExtendedKeyUsageOID.SERVER_AUTH in eku
+        client_auth = ExtendedKeyUsageOID.CLIENT_AUTH in eku
+    except x509.ExtensionNotFound:
+        pass
+    if is_ca:
+        cert_type = "ca"
+    elif server_auth and client_auth:
+        cert_type = "ambos"
+    elif client_auth:
+        cert_type = "cliente_mtls"
+    elif server_auth:
+        cert_type = "servidor"
+    else:
+        cert_type = ""
+
     return {
         "cn": _cn(cert.subject),
         "subject": cert.subject.rfc4514_string(),
         "issuer": cert.issuer.rfc4514_string(),
+        "issuer_cn": _cn(cert.issuer),
+        "cert_type": cert_type,
         "sans": ", ".join(sans),
         "serial": format(cert.serial_number, "x").upper(),
         "thumbprint_sha1": cert.fingerprint(hashes.SHA1()).hex().upper(),

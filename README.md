@@ -33,12 +33,24 @@ docker compose up -d --build
 | Aba | O que faz |
 |---|---|
 | 📊 Dashboard | Vencimentos (≤30/60/90 dias), REQs por status/ambiente, atividade |
-| 📋 Demandas | CRUD de REQs com senha automática, notas, locais de instalação, histórico |
+| 📈 Analytics | Gráficos: saúde/vencimentos dos certificados, demandas, tarefas, atividade |
+| 🗂️ Kanban | Quadro de tarefas dos projetos — colunas, prioridades, categorias, drag-and-drop |
+| 📋 Demandas | CRUD de REQs com senha automática, notas, locais, histórico e respostas prontas |
 | 📝 Gerar CSR | Wildcard/SAN via `cryptography`, `.inf` p/ certreq ou HSM (hsmutil) |
-| 📜 Certificados | Importa .cer/.pem/.der/.pfx e lê os campos automaticamente |
-| 🔑 Senhas | Gerador com política configurável (módulo `secrets`) |
+| 🔍 CSR Decoder | Decodifica CSRs (CN, SANs, chave, assinatura) e guarda num repositório |
+| 📜 Certificados | Importa e classifica (servidor/cliente mTLS/CA), filtra por emissor, vincula cadeias |
+| 🔗 Validar cadeia | Análise elo a elo (assinaturas, validade, hostname), AIA e servidor remoto TLS |
+| 🔑 Senhas | Gerador com política configurável (módulo `secrets`), cópia individual ou de todas |
 | 📖 Manuais | Guias de instalação + cheatsheets certutil/certreq/openssl/keytool |
-| ⚙️ Configurações | Pastas, alertas, política de senha, templates do HSM |
+| 🎨 Aparência | Tema claro/escuro, menu lateral/compacto/horizontal, cor de destaque |
+| ⚙️ Configurações | Pastas, alertas, política de senha, templates do HSM e de resposta |
+
+## Dados de demonstração
+
+```bash
+.venv/bin/python scripts/demo_data.py           # cria demandas/certificados fictícios (bancofic.com.br)
+.venv/bin/python scripts/demo_data.py --remove  # remove tudo que o script criou
+```
 
 ## Estrutura de pastas por demanda
 

@@ -12,7 +12,9 @@ KEY_TYPES = {
 
 
 def generate_key_and_csr(cn: str, sans: list[str] | None = None, key_type: str = "rsa2048",
-                         org: str = "", country: str = "") -> tuple[str, str]:
+                         org: str = "", country: str = "",
+                         state: str = "", locality: str = "",
+                         ou: str = "", email: str = "") -> tuple[str, str]:
     """Retorna (key_pem, csr_pem)."""
     algo, size = KEY_TYPES.get(key_type, KEY_TYPES["rsa2048"])
     if algo == "EC":
@@ -23,8 +25,16 @@ def generate_key_and_csr(cn: str, sans: list[str] | None = None, key_type: str =
     name_attrs = [x509.NameAttribute(NameOID.COMMON_NAME, cn)]
     if org:
         name_attrs.append(x509.NameAttribute(NameOID.ORGANIZATION_NAME, org))
+    if ou:
+        name_attrs.append(x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, ou))
     if country:
-        name_attrs.append(x509.NameAttribute(NameOID.COUNTRY_NAME, country))
+        name_attrs.append(x509.NameAttribute(NameOID.COUNTRY_NAME, country[:2].upper()))
+    if state:
+        name_attrs.append(x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, state))
+    if locality:
+        name_attrs.append(x509.NameAttribute(NameOID.LOCALITY_NAME, locality))
+    if email:
+        name_attrs.append(x509.NameAttribute(NameOID.EMAIL_ADDRESS, email))
 
     builder = x509.CertificateSigningRequestBuilder().subject_name(x509.Name(name_attrs))
 
@@ -47,14 +57,24 @@ def generate_key_and_csr(cn: str, sans: list[str] | None = None, key_type: str =
 
 
 def build_certreq_inf(cn: str, sans: list[str] | None = None, key_type: str = "rsa2048",
-                      org: str = "", country: str = "", exportable: bool = True) -> str:
+                      org: str = "", country: str = "", exportable: bool = True,
+                      state: str = "", locality: str = "",
+                      ou: str = "", email: str = "") -> str:
     """Monta o conteúdo do .inf usado por `certreq -new`."""
     _, size = KEY_TYPES.get(key_type, KEY_TYPES["rsa2048"])
     subject_parts = [f"CN={cn}"]
+    if ou:
+        subject_parts.append(f"OU={ou}")
     if org:
         subject_parts.append(f"O={org}")
+    if locality:
+        subject_parts.append(f"L={locality}")
+    if state:
+        subject_parts.append(f"S={state}")
     if country:
-        subject_parts.append(f"C={country}")
+        subject_parts.append(f"C={country[:2].upper()}")
+    if email:
+        subject_parts.append(f"E={email}")
 
     lines = [
         "[NewRequest]",

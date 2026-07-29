@@ -9,6 +9,20 @@ DB_PATH = DATA_DIR / "certhub.db"
 
 ENVS = ["PRD", "TQS", "HMP", "DES"]
 REQ_STATUSES = ["aberta", "csr_gerada", "cert_emitido", "instalado", "concluida", "cancelada"]
+DEMAND_TYPES = ["emissao", "renovacao", "revogacao", "usuario", "instalacao_existente", "outro"]
+TASK_LANES = ["backlog", "a_fazer", "em_andamento", "concluido"]
+TASK_PRIORITIES = ["alta", "media", "baixa"]
+CERT_TYPES = ["servidor", "cliente_mtls", "ambos", "ca"]
+CERT_CATEGORIES = [
+    "sectigo_dv", "sectigo_ov", "sectigo_ev",
+    "ac_interna_apl_prd", "ac_icp_testes",
+    "apple", "bandeiras", "parceiro_externo", "sepro", "outro",
+]
+INSTALL_LOCATIONS = [
+    "mainframe", "balanceador", "keyvault_azure", "aws_cert_manager",
+    "secrets_manager", "azion", "akamai", "iis", "apache", "nginx",
+    "tomcat", "outro",
+]
 
 SCHEMA = """
 CREATE TABLE reqs (
@@ -72,6 +86,82 @@ CREATE TABLE settings (
 );
 """
 
+SCHEMA_V2 = """
+CREATE TABLE tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'geral',
+    priority TEXT NOT NULL DEFAULT 'media' CHECK (priority IN ('alta','media','baixa')),
+    lane TEXT NOT NULL DEFAULT 'backlog'
+        CHECK (lane IN ('backlog','a_fazer','em_andamento','concluido')),
+    position INTEGER NOT NULL DEFAULT 0,
+    req_id INTEGER REFERENCES reqs(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+"""
+
+SCHEMA_V3 = """
+CREATE TABLE reply_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+"""
+
+SCHEMA_V4 = """
+ALTER TABLE certificates ADD COLUMN cert_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE certificates ADD COLUMN issuer_cn TEXT NOT NULL DEFAULT '';
+ALTER TABLE certificates ADD COLUMN parent_id INTEGER REFERENCES certificates(id);
+
+CREATE TABLE csrs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cn TEXT,
+    sans TEXT DEFAULT '',
+    subject TEXT,
+    key_type TEXT,
+    sig_algo TEXT,
+    req_id INTEGER REFERENCES reqs(id) ON DELETE SET NULL,
+    pem TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+"""
+
+SCHEMA_V5 = """
+ALTER TABLE certificates ADD COLUMN cert_category TEXT NOT NULL DEFAULT '';
+ALTER TABLE reqs ADD COLUMN demand_type TEXT NOT NULL DEFAULT 'emissao';
+ALTER TABLE reqs ADD COLUMN subject_email TEXT NOT NULL DEFAULT '';
+ALTER TABLE reqs ADD COLUMN subject_l TEXT NOT NULL DEFAULT '';
+ALTER TABLE reqs ADD COLUMN subject_st TEXT NOT NULL DEFAULT '';
+ALTER TABLE reqs ADD COLUMN subject_org TEXT NOT NULL DEFAULT '';
+ALTER TABLE reqs ADD COLUMN subject_ou TEXT NOT NULL DEFAULT '';
+ALTER TABLE reqs ADD COLUMN subject_country TEXT NOT NULL DEFAULT '';
+ALTER TABLE install_locations ADD COLUMN location_type TEXT NOT NULL DEFAULT 'outro';
+ALTER TABLE install_locations ADD COLUMN change_required INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE install_locations ADD COLUMN change_ticket TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS batch_ops (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS batch_op_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL REFERENCES batch_ops(id) ON DELETE CASCADE,
+    req_id   INTEGER REFERENCES reqs(id) ON DELETE SET NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    req_number TEXT NOT NULL DEFAULT '',
+    cn TEXT NOT NULL DEFAULT '',
+    password TEXT,
+    status TEXT NOT NULL DEFAULT 'pendente',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+"""
+
 DEFAULT_SETTINGS = {
     "base_dir": str(DATA_DIR / "files"),
     "folder_template": "{env}/{req}_{cn}",
@@ -106,6 +196,26 @@ def init_db():
         _seed(conn)
         conn.execute("PRAGMA user_version = 1")
         conn.commit()
+    if version < 2:
+        conn.executescript(SCHEMA_V2)
+        _seed_tasks(conn)
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+    if version < 3:
+        conn.executescript(SCHEMA_V3)
+        for name, content in SEED_TEMPLATES:
+            conn.execute("INSERT INTO reply_templates (name, content) VALUES (?,?)",
+                         (name, content))
+        conn.execute("PRAGMA user_version = 3")
+        conn.commit()
+    if version < 4:
+        conn.executescript(SCHEMA_V4)
+        conn.execute("PRAGMA user_version = 4")
+        conn.commit()
+    if version < 5:
+        conn.executescript(SCHEMA_V5)
+        conn.execute("PRAGMA user_version = 5")
+        conn.commit()
     conn.close()
 
 
@@ -129,6 +239,94 @@ def _seed(conn):
             "INSERT INTO docs (title, category, content_md) VALUES (?,?,?)",
             (title, category, content),
         )
+
+
+def _seed_tasks(conn):
+    for pos, (title, description, category, priority, lane) in enumerate(SEED_TASKS, start=1):
+        conn.execute(
+            "INSERT INTO tasks (title, description, category, priority, lane, position) "
+            "VALUES (?,?,?,?,?,?)",
+            (title, description, category, priority, lane, pos),
+        )
+
+
+SEED_TASKS = [
+    ("Validação de cadeia de certificados",
+     "Nova aba/seção: upload do certificado + intermediárias (ou fetch via AIA), montar e "
+     "validar a cadeia com cryptography (x509.verification) e mostrar veredito visual — "
+     "cadeia OK ou quebrada em qual elo, validade e hostname.",
+     "certhub", "alta", "a_fazer"),
+    ("Toolbox OpenSSL (PFX ⇄ crt/key)",
+     "Interface gráfica para as operações mais comuns: extrair .crt/.key de um .pfx, montar "
+     "PFX a partir de crt+key+cadeia, converter PEM⇄DER e conferir se chave/CSR/cert combinam "
+     "(modulus). Implementar com cryptography.hazmat (pkcs12) — sem depender do openssl no PATH — "
+     "e exibir o comando openssl equivalente ao lado.",
+     "certhub", "alta", "a_fazer"),
+    ("Wiki da equipe no SharePoint",
+     "Criar o site/páginas no SharePoint: como solicitar serviços (gerar, revogar, instalar "
+     "certificados), normativos que regem os processos, tutoriais e links úteis. Estruturar o "
+     "conteúdo em formato pergunta-resposta para servir de base de conhecimento do assistente.",
+     "wiki", "alta", "a_fazer"),
+    ("Assistente virtual no Copilot Studio",
+     "Criar o agente no Copilot Studio usando a wiki do SharePoint como knowledge source; "
+     "publicar no Teams para a equipe e para quem tem dúvidas sobre solicitações e normativos.",
+     "wiki", "media", "backlog"),
+    ("Criptografar senhas das REQs",
+     "Substituir senhas em texto puro por senha mestra + PBKDF2/Fernet.",
+     "certhub", "media", "backlog"),
+    ("Helper Node.js para HSM Dinamo",
+     "Integração via SDK JS da Dinamo (app/services/hsm/dinamo_js.py) em vez de templates hsmutil.",
+     "hsm", "baixa", "backlog"),
+]
+
+
+SEED_TEMPLATES = [
+    ("Certificado emitido — aviso ao solicitante", """\
+Prezado(a),
+
+O certificado referente à demanda {req} foi emitido com sucesso.
+
+  • CN / URL: {cn}
+  • Ambiente: {env}
+  • Emissor: {emissor}
+  • Válido até: {vencimento}
+
+A senha do arquivo PFX será encaminhada por canal seguro.
+Qualquer dúvida sobre a instalação, estamos à disposição.
+
+Atenciosamente,
+Equipe de Criptografia"""),
+    ("Certificado instalado — encerramento da demanda", """\
+Prezado(a),
+
+Informamos que a demanda {req} foi concluída.
+
+  • Certificado: {cn}
+  • Ambiente: {env}
+  • Instalado em: {locais}
+  • Válido até: {vencimento}
+
+A cadeia de certificação foi validada após a instalação.
+A demanda será encerrada em {data}.
+
+Atenciosamente,
+Equipe de Criptografia"""),
+    ("Solicitação de informações complementares", """\
+Prezado(a),
+
+Para dar andamento à demanda {req}, precisamos das seguintes informações:
+
+  1. CN / URL do certificado (confirmar: {cn})
+  2. Ambiente de destino (PRD, TQS, HMP ou DES)
+  3. Servidor(es) onde será instalado
+  4. Nomes alternativos (SANs), se houver
+  5. Responsável técnico pela instalação
+
+A demanda permanecerá aguardando retorno.
+
+Atenciosamente,
+Equipe de Criptografia"""),
+]
 
 
 SEED_DOCS = [

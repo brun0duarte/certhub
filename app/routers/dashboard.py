@@ -47,3 +47,58 @@ def dashboard():
     return {"alert_days": alert_days, "expiring": expiring, "by_env": by_env,
             "by_status": by_status, "next_expiring": next_expiring,
             "activity": activity, "totals": totals}
+
+
+@router.get("/analytics")
+def analytics():
+    conn = get_db()
+    days_left_sql = "CAST(julianday(not_after) - julianday('now','localtime') AS INTEGER)"
+
+    expiring_by_month = [dict(r) for r in conn.execute(
+        f"""SELECT strftime('%Y-%m', not_after) AS month, COUNT(*) n
+            FROM certificates
+            WHERE {days_left_sql} >= 0 AND not_after <= date('now','localtime','+12 months')
+            GROUP BY month ORDER BY month""")]
+
+    reqs_by_month = [dict(r) for r in conn.execute(
+        """SELECT strftime('%Y-%m', created_at) AS month, COUNT(*) n
+           FROM reqs WHERE created_at >= date('now','localtime','-12 months')
+           GROUP BY month ORDER BY month""")]
+
+    by_env = {r["env"]: r["n"] for r in conn.execute(
+        "SELECT env, COUNT(*) n FROM reqs GROUP BY env")}
+    by_status = {r["status"]: r["n"] for r in conn.execute(
+        "SELECT status, COUNT(*) n FROM reqs GROUP BY status")}
+
+    key_types = [dict(r) for r in conn.execute(
+        """SELECT COALESCE(NULLIF(key_type,''),'desconhecido') AS label, COUNT(*) n
+           FROM certificates GROUP BY label ORDER BY n DESC""")]
+
+    issuers = [dict(r) for r in conn.execute(
+        """SELECT COALESCE(NULLIF(issuer,''),'desconhecido') AS label, COUNT(*) n
+           FROM certificates GROUP BY label ORDER BY n DESC LIMIT 6""")]
+
+    cert_health = {
+        "vencidos": conn.execute(
+            f"SELECT COUNT(*) FROM certificates WHERE {days_left_sql} < 0").fetchone()[0],
+        "ate_30": conn.execute(
+            f"SELECT COUNT(*) FROM certificates WHERE {days_left_sql} BETWEEN 0 AND 30").fetchone()[0],
+        "ate_90": conn.execute(
+            f"SELECT COUNT(*) FROM certificates WHERE {days_left_sql} BETWEEN 31 AND 90").fetchone()[0],
+        "ok": conn.execute(
+            f"SELECT COUNT(*) FROM certificates WHERE {days_left_sql} > 90").fetchone()[0],
+    }
+
+    tasks_by_lane = [dict(r) for r in conn.execute(
+        "SELECT lane, priority, COUNT(*) n FROM tasks GROUP BY lane, priority")]
+
+    activity_by_day = [dict(r) for r in conn.execute(
+        """SELECT strftime('%Y-%m-%d', created_at) AS day, COUNT(*) n
+           FROM activity_log WHERE created_at >= date('now','localtime','-30 days')
+           GROUP BY day ORDER BY day""")]
+
+    conn.close()
+    return {"expiring_by_month": expiring_by_month, "reqs_by_month": reqs_by_month,
+            "by_env": by_env, "by_status": by_status, "key_types": key_types,
+            "issuers": issuers, "cert_health": cert_health,
+            "tasks_by_lane": tasks_by_lane, "activity_by_day": activity_by_day}

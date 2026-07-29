@@ -4,8 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CertHub — Gerenciador de Certificados</title>
+<meta name="description" content="CertHub: gerencie certificados digitais, demandas, CSRs, locais de instalação e operações em lote com fluxos Mermaid.">
 <link rel="stylesheet" href="/static/styles.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
+<!-- Mermaid.js for flow diagrams -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 </head>
 <body>
 <div class="layout">
@@ -18,22 +21,54 @@
       </div>
     </div>
     <nav id="nav">
-      <a href="#/dashboard" data-view="dashboard"><span>📊</span> Dashboard</a>
-      <a href="#/reqs" data-view="reqs"><span>📋</span> Demandas</a>
-      <a href="#/csr" data-view="csr"><span>📝</span> Gerar CSR</a>
-      <a href="#/certs" data-view="certs"><span>📜</span> Certificados</a>
-      <a href="#/passwords" data-view="passwords"><span>🔑</span> Senhas</a>
-      <a href="#/docs" data-view="docs"><span>📖</span> Manuais &amp; Comandos</a>
-      <a href="#/settings" data-view="settings"><span>⚙️</span> Configurações</a>
+      <a href="#/dashboard" data-view="dashboard" title="Dashboard"><span>📊</span><span class="nav-txt">Dashboard</span></a>
+      <a href="#/analytics" data-view="analytics" title="Analytics"><span>📈</span><span class="nav-txt">Analytics</span></a>
+      <a href="#/kanban" data-view="kanban" title="Kanban"><span>🗂️</span><span class="nav-txt">Kanban</span></a>
+      <a href="#/reqs" data-view="reqs" title="Demandas"><span>📋</span><span class="nav-txt">Demandas</span></a>
+      <a href="#/batch" data-view="batch" title="Operações em Lote"><span>🔢</span><span class="nav-txt">Op. em Lote</span></a>
+      <a href="#/csr" data-view="csr" title="Gerar CSR"><span>📝</span><span class="nav-txt">Gerar CSR</span></a>
+      <a href="#/csrdecoder" data-view="csrdecoder" title="CSR Decoder"><span>🔍</span><span class="nav-txt">CSR Decoder</span></a>
+      <a href="#/certs" data-view="certs" title="Certificados"><span>📜</span><span class="nav-txt">Certificados</span></a>
+      <a href="#/validate" data-view="validate" title="Validar cadeia"><span>🔗</span><span class="nav-txt">Validar cadeia</span></a>
+      <a href="#/passwords" data-view="passwords" title="Senhas"><span>🔑</span><span class="nav-txt">Senhas</span></a>
+      <a href="#/docs" data-view="docs" title="Manuais &amp; Comandos"><span>📖</span><span class="nav-txt">Manuais &amp; Comandos</span></a>
+      <a href="#/appearance" data-view="appearance" title="Aparência"><span>🎨</span><span class="nav-txt">Aparência</span></a>
+      <a href="#/settings" data-view="settings" title="Configurações"><span>⚙️</span><span class="nav-txt">Configurações</span></a>
     </nav>
     <div class="sidebar-footer">
       <button id="theme-toggle" class="btn btn-ghost" title="Alternar tema">🌙 Tema</button>
+      <button id="menu-collapse" class="btn btn-ghost" title="Recolher/expandir menu">⇤</button>
     </div>
   </aside>
   <main id="main" class="main"></main>
 </div>
 <div id="modal-root"></div>
 <div id="toast-root"></div>
+<script>
+  // Initialize mermaid before app.js
+  if (window.mermaid) {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'dark',
+      themeVariables: {
+        primaryColor: '#5b8afd',
+        primaryTextColor: '#e6eaf2',
+        primaryBorderColor: '#2b3242',
+        lineColor: '#8b94a8',
+        secondaryColor: '#1a1f29',
+        tertiaryColor: '#222835',
+        background: '#12151c',
+        mainBkg: '#1a1f29',
+        nodeBorder: '#2b3242',
+        clusterBkg: '#222835',
+        titleColor: '#e6eaf2',
+        edgeLabelBackground: '#1a1f29',
+        fontFamily: '"Segoe UI", system-ui, sans-serif',
+      },
+      flowchart: { curve: 'basis', htmlLabels: true },
+    });
+  }
+</script>
 <script src="/static/app.js"></script>
 </body>
 </html>
