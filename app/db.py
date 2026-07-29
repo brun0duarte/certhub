@@ -148,6 +148,9 @@ CREATE TABLE IF NOT EXISTS batch_ops (
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+-- NOTA: As tabelas batch_ops e batch_op_items estão depreciadas (removidas do sistema).
+-- Mantidas aqui para garantir a retrocompatibilidade da migração V5.
+
 CREATE TABLE IF NOT EXISTS batch_op_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     batch_id INTEGER NOT NULL REFERENCES batch_ops(id) ON DELETE CASCADE,
