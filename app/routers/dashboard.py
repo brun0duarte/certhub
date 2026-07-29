@@ -42,6 +42,9 @@ def dashboard():
         "reqs_abertas": conn.execute(
             "SELECT COUNT(*) FROM reqs WHERE status NOT IN ('concluida','cancelada')").fetchone()[0],
         "certificados": conn.execute("SELECT COUNT(*) FROM certificates").fetchone()[0],
+        "work_orders_abertas": conn.execute(
+            "SELECT COUNT(*) FROM work_orders WHERE status IN ('aberta','em_andamento')"
+        ).fetchone()[0],
     }
     conn.close()
     return {"alert_days": alert_days, "expiring": expiring, "by_env": by_env,

@@ -157,6 +157,15 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .badge-instalado { background: var(--teal-soft); color: var(--teal); }
 .badge-concluida { background: var(--green-soft); color: var(--green); }
 .badge-cancelada { background: var(--gray-soft); color: var(--gray); }
+
+/* ---------- WO badges ---------- */
+.badge-WO { background: var(--accent-soft); color: var(--accent-text); }
+.badge-CRQ { background: var(--amber-soft); color: var(--amber); }
+.badge-wo-aberta { background: var(--amber-soft); color: var(--amber); }
+.badge-wo-em_andamento { background: var(--accent-soft); color: var(--accent-text); }
+.badge-wo-concluida { background: var(--green-soft); color: var(--green); }
+.badge-wo-cancelada { background: var(--gray-soft); color: var(--gray); }
+
 .badge-tipo-servidor { background: var(--teal-soft); color: var(--teal); }
 .badge-tipo-cliente_mtls { background: var(--purple-soft); color: var(--purple); }
 .badge-tipo-ambos { background: var(--accent-soft); color: var(--accent-text); }

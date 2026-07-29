@@ -410,8 +410,12 @@ function fillTemplate(content, r) {
 }
 
 async function openReq(id, onDone) {
-  const [r, tpls] = await Promise.all([api(`/reqs/${id}`), api("/templates")]);
+  const [r, tpls, wos] = await Promise.all([api(`/reqs/${id}`), api("/templates"), api(`/work-orders?req_id=${id}`)]);
   modal(`${r.req_number} — ${r.cn}`, `
+    ${(r.status === 'cert_emitido' && wos.length === 0) ? `<div class="wo-alert-banner" style="margin-bottom:14px;padding:12px;background:var(--amber-soft);color:var(--amber);border-radius:8px;display:flex;justify-content:space-between;align-items:center;">
+      <span>⚠️ Certificado emitido — crie uma WO de instalação</span>
+      <button class="btn btn-sm" id="d-banner-create-wo" style="background:var(--bg-panel);color:var(--text);">Criar WO</button>
+    </div>` : ''}
     <div class="chips" style="margin-bottom:14px">${envBadge(r.env)} ${statusBadge(r.status)}
       <span class="muted">criada em ${fmtDateTime(r.created_at)}</span></div>
 
@@ -458,6 +462,15 @@ async function openReq(id, onDone) {
       <div class="field"><label>Caminho / store</label><input class="input" id="l-path" placeholder="IIS binding 443 · LocalMachine\\My"></div>
     </div>
     <button class="btn btn-sm" id="l-add">＋ Adicionar local</button>
+
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Work Orders vinculadas</h3>
+    <div id="d-wos">${wos.map(wo => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+        <div><span class="badge badge-${wo.wo_type}">${esc(wo.wo_number)}</span> <strong>${esc(wo.title)}</strong>
+          <span class="badge badge-wo-${wo.status}" style="margin-left:8px">${esc(wo.status.replace("_"," "))}</span>
+        </div>
+      </div>`).join("") || `<div class="muted">Nenhuma WO/CRQ vinculada.</div>`}</div>
+    <button class="btn btn-sm mt" id="d-create-wo">Criar WO de Instalação</button>
 
     <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Certificados vinculados</h3>
     ${r.certificates.length ? `<table class="tbl"><tbody>${r.certificates.map(c => `
@@ -516,11 +529,26 @@ async function openReq(id, onDone) {
     closeModal(); location.hash = "#/csr";
   };
   $("#d-save").onclick = async () => {
-    await api(`/reqs/${id}`, { method: "PUT", json: {
+    const res = await api(`/reqs/${id}`, { method: "PUT", json: {
       status: $("#d-status").value, notes: $("#d-notes").value,
     }});
-    closeModal(); toast("Demanda atualizada"); onDone && onDone();
+    if (res.suggest_wo && wos.length === 0) {
+      toast("⚠️ Certificado emitido — crie uma WO de instalação");
+      openReq(id, onDone); // reopen to show banner
+    } else {
+      closeModal(); toast("Demanda atualizada"); onDone && onDone();
+    }
   };
+  
+  const handleCreateWO = async () => {
+    try {
+      const wo = await api(`/reqs/${id}/create-installation-wo`, { method: "POST" });
+      toast(`WO criada: ${wo.wo_number}`);
+      openReq(id, onDone);
+    } catch (e) { toast(e.message, "err"); }
+  };
+  if ($("#d-create-wo")) $("#d-create-wo").onclick = handleCreateWO;
+  if ($("#d-banner-create-wo")) $("#d-banner-create-wo").onclick = handleCreateWO;
   $("#d-delete").onclick = async () => {
     if (!confirm(`Excluir a demanda ${r.req_number}? O histórico e locais serão removidos.`)) return;
     await api(`/reqs/${id}`, { method: "DELETE" });
@@ -1616,3 +1644,99 @@ applyAccent(localStorage.getItem("certhub-accent") || "blue");
   }
   navigate();
 })();
+
+/* ---------------- Work Orders ---------------- */
+views.workOrders = async () => {
+  const [wos, reqs] = await Promise.all([api("/work-orders"), api("/reqs")]);
+  
+  main.innerHTML = `
+    <div class="view-header"><div>
+      <div class="view-title">Work Orders</div>
+      <div class="view-sub">Gerenciamento de WOs e CRQs</div>
+    </div>
+    <div class="toolbar">
+      <button class="btn btn-primary" id="wo-new">＋ Nova WO/CRQ</button>
+    </div></div>
+    <div class="panel">
+      ${wos.length ? `<table class="tbl"><thead><tr><th>Número</th><th>Tipo</th><th>Título</th><th>REQ</th><th>Ambiente</th><th>Status</th><th>Agendamento</th><th>Ações</th></tr></thead>
+        <tbody>${wos.map(wo => `
+          <tr>
+            <td class="mono"><strong>${esc(wo.wo_number)}</strong></td>
+            <td><span class="badge badge-${wo.wo_type}">${wo.wo_type}</span></td>
+            <td>${esc(wo.title)}</td>
+            <td class="mono">${esc(wo.req_number || "—")}</td>
+            <td>${wo.env ? envBadge(wo.env) : "—"}</td>
+            <td><span class="badge badge-wo-${wo.status}">${esc(wo.status.replace("_"," "))}</span></td>
+            <td>${wo.scheduled_at ? fmtDate(wo.scheduled_at) : "—"}</td>
+            <td><button class="btn btn-sm" onclick="editWO(${wo.id})">Detalhes</button></td>
+          </tr>`).join("")}
+        </tbody></table>` : `<div class="empty">Nenhuma Work Order encontrada.</div>`}
+    </div>`;
+
+  $("#wo-new").onclick = () => woModal(null, views.workOrders, reqs);
+  window.editWO = async (id) => {
+    const wo = await api(`/work-orders/${id}`);
+    woModal(wo, views.workOrders, reqs);
+  };
+};
+
+window.woModal = function(wo, onDone, reqs) {
+  const isEdit = !!wo;
+  const reqOpts = reqs.map(r => `<option value="${r.id}" ${wo && wo.parent_req_id === r.id ? "selected" : ""}>${esc(r.req_number)} - ${esc(r.cn)}</option>`).join("");
+  
+  modal(isEdit ? "Editar Work Order" : "Nova Work Order", `
+    <div class="form-row">
+      <div class="field"><label>Número</label><input class="input" id="w-num" value="${esc(wo?.wo_number || "")}" placeholder="WO12345"></div>
+      <div class="field"><label>Tipo</label><select class="input" id="w-type">
+        <option value="WO" ${wo?.wo_type === "WO" ? "selected" : ""}>WO</option>
+        <option value="CRQ" ${wo?.wo_type === "CRQ" ? "selected" : ""}>CRQ</option>
+      </select></div>
+    </div>
+    <div class="field"><label>Título</label><input class="input" id="w-title" value="${esc(wo?.title || "")}"></div>
+    <div class="field"><label>Demanda Vinculada (Parent REQ)</label><select class="input" id="w-req">
+      <option value="">— Nenhuma —</option>
+      ${reqOpts}
+    </select></div>
+    <div class="form-row">
+      <div class="field"><label>Status</label><select class="input" id="w-status">
+        <option value="aberta" ${wo?.status === "aberta" ? "selected" : ""}>Aberta</option>
+        <option value="em_andamento" ${wo?.status === "em_andamento" ? "selected" : ""}>Em Andamento</option>
+        <option value="concluida" ${wo?.status === "concluida" ? "selected" : ""}>Concluída</option>
+        <option value="cancelada" ${wo?.status === "cancelada" ? "selected" : ""}>Cancelada</option>
+      </select></div>
+      <div class="field"><label>Agendamento</label><input type="date" class="input" id="w-date" value="${esc(wo?.scheduled_at ? wo.scheduled_at.split('T')[0] : "")}"></div>
+    </div>
+    <div class="field"><label>Descrição</label><textarea class="input" id="w-desc">${esc(wo?.description || "")}</textarea></div>
+  `, { footer: `
+    ${isEdit ? `<button class="btn btn-danger" id="w-del">Excluir</button>` : ""}
+    <button class="btn btn-primary" id="w-save">Salvar</button>
+  `});
+
+  $("#w-save").onclick = async () => {
+    const payload = {
+      wo_number: $("#w-num").value,
+      wo_type: $("#w-type").value,
+      title: $("#w-title").value,
+      parent_req_id: $("#w-req").value ? parseInt($("#w-req").value) : null,
+      status: $("#w-status").value,
+      scheduled_at: $("#w-date").value || null,
+      description: $("#w-desc").value
+    };
+    try {
+      if (isEdit) {
+        await api(`/work-orders/${wo.id}`, { method: "PUT", json: payload });
+      } else {
+        await api("/work-orders", { method: "POST", json: payload });
+      }
+      closeModal(); onDone();
+    } catch (e) { toast(e.message, "err"); }
+  };
+
+  if (isEdit) {
+    $("#w-del").onclick = async () => {
+      if (!confirm("Excluir esta WO?")) return;
+      await api(`/work-orders/${wo.id}`, { method: "DELETE" });
+      closeModal(); onDone();
+    };
+  }
+}
