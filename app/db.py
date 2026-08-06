@@ -380,20 +380,23 @@ def init_db():
                 pass
         version = 12
 
-    if version == 12:
+    if version == 12 or version == 13:
         for col_sql in [
             "ALTER TABLE reqs ADD COLUMN external_crq TEXT DEFAULT ''",
+            "ALTER TABLE reqs ADD COLUMN external_partner TEXT DEFAULT ''",
+            "ALTER TABLE certificates ADD COLUMN external_partner TEXT DEFAULT ''",
         ]:
             try:
                 conn.execute(col_sql)
             except sqlite3.OperationalError:
                 pass
-        version = 13
+        version = 14
 
     if version > 0:
         conn.execute(f"PRAGMA user_version = {version}")
         conn.commit()
     conn.close()
+
 
 
 def log_activity(conn, action: str, detail: str = "", req_id=None):
@@ -515,7 +518,23 @@ A demanda permanecerá aguardando retorno.
 
 Atenciosamente,
 Equipe de Criptografia"""),
+    ("Aviso de vencimento — parceiro externo", """\
+Prezado(a) {parceiro_externo},
+
+Comunicamos que o certificado referente ao domínio {cn} ({env}) está próximo do vencimento.
+
+  • CN / URL: {cn}
+  • Ambiente: {env}
+  • Emissor: {emissor}
+  • Data de Vencimento: {vencimento}
+  • Parceiro / Sistema: {parceiro_externo}
+
+Solicitamos que confirme a renovação ou envio dos dados atualizados para evitar a indisponibilidade do serviço.
+
+Atenciosamente,
+Equipe de Gestão de Certificados"""),
 ]
+
 
 
 SEED_DOCS = [

@@ -34,6 +34,7 @@ class ReqIn(BaseModel):
     parent_req_id: int | None = None
     external_wo: str = ""
     external_crq: str = ""
+    external_partner: str = ""
 
 
 class ReqUpdate(BaseModel):
@@ -45,6 +46,8 @@ class ReqUpdate(BaseModel):
     demand_type: str | None = None
     external_wo: str | None = None
     external_crq: str | None = None
+    external_partner: str | None = None
+
 
 
 class LocationIn(BaseModel):
@@ -125,11 +128,12 @@ def create_req(body: ReqIn):
 
         password = body.password or (_auto_password(conn) if body.auto_password else None)
         cur = conn.execute(
-            "INSERT INTO reqs (req_number, cn, env, password, notes, demand_type, parent_req_id, external_wo, external_crq) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO reqs (req_number, cn, env, password, notes, demand_type, parent_req_id, external_wo, external_crq, external_partner) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (req_number, body.cn.strip(), body.env, password, body.notes,
-             body.demand_type, body.parent_req_id, body.external_wo, body.external_crq),
+             body.demand_type, body.parent_req_id, body.external_wo, body.external_crq, body.external_partner),
         )
+
         req_id = cur.lastrowid
         log_activity(conn, "req_criada", f"{req_number} · CN {body.cn} · {body.env}", req_id)
         if password and body.auto_password and not body.password:
@@ -237,6 +241,47 @@ def regenerate_password(req_id: int):
         log_activity(conn, "senha_gerada", "Senha regenerada", req_id)
         conn.commit()
         return {"password": password}
+
+
+@router.post("/reqs/{req_id}/import-previous-locations")
+def import_previous_locations(req_id: int):
+    """Importa locais de instalação de demandas anteriores do mesmo CN."""
+    with db_conn() as conn:
+        current = conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone()
+        if not current:
+            raise HTTPException(404, "Demanda não encontrada")
+        
+        prev_locs = conn.execute("""
+            SELECT l.* FROM install_locations l
+            JOIN reqs r ON r.id = l.req_id
+            WHERE r.cn = ? AND r.id != ?
+            ORDER BY l.id DESC
+        """, (current['cn'], req_id)).fetchall()
+
+        if not prev_locs:
+            raise HTTPException(404, f"Nenhum local de instalação anterior encontrado para o CN '{current['cn']}'.")
+
+        added = 0
+        existing_servers = {
+            (r['server'], r['path_or_store']) for r in conn.execute(
+                "SELECT server, path_or_store FROM install_locations WHERE req_id=?", (req_id,)
+            ).fetchall()
+        }
+
+        for loc in prev_locs:
+            key = (loc['server'], loc.get('path_or_store', ''))
+            if key not in existing_servers:
+                conn.execute("""
+                    INSERT INTO install_locations (req_id, server, path_or_store, location_type, notes, status)
+                    VALUES (?, ?, ?, ?, ?, 'pendente')
+                """, (req_id, loc['server'], loc.get('path_or_store', ''), loc.get('location_type', 'outro'), loc.get('notes', '')))
+                existing_servers.add(key)
+                added += 1
+
+        log_activity(conn, "locais_importados", f"Importados {added} locais de instalação de demandas anteriores do CN {current['cn']}", req_id)
+        conn.commit()
+        return {"added": added}
+
 
 
 @router.post("/reqs/{req_id}/folder")

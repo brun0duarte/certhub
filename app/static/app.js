@@ -606,7 +606,12 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
       if (opts.certId) {
         await api(`/monitor/certs/${opts.certId}/flag-renewal`, { method: "POST" }).catch(() => {});
       }
+      // Se for renovação, auto-importa locais de instalação de demandas anteriores do mesmo CN
+      if ($("#nd-type").value === 'renovacao' || defaultType === 'renovacao') {
+        await api(`/reqs/${row.id}/import-previous-locations`, { method: "POST" }).catch(() => {});
+      }
       closeModal();
+
       toast(`Demanda ${row.req_number} criada` + (row.password ? ' · senha gerada' : ''));
       onDone && onDone();
     } catch (e) { toast(e.message, "err"); }
@@ -657,10 +662,16 @@ function fillTemplate(content, r) {
     senha: r.password || "",
     password: r.password || "",
 
+    // External Partner / Parceiro Externo
+    parceiro_externo: r.external_partner || cert.external_partner || "",
+    parceiro: r.external_partner || cert.external_partner || "",
+    external_partner: r.external_partner || cert.external_partner || "",
+
     // Notes / Observações
     notas: r.notes || "",
     notes: r.notes || "",
     observacoes: r.notes || "",
+
 
     // Certificate details
     vencimento: cert.not_after ? fmtDate(cert.not_after) : "",
@@ -709,8 +720,12 @@ async function openReq(id, onDone) {
           <button class="btn btn-sm" id="d-pwd-regen" title="Regenerar">🎲</button>
         </div></div>
     </div>
-    <div class="field"><label>Notas / observações</label>
-      <textarea class="input" id="d-notes">${esc(r.notes || "")}</textarea></div>
+    <div class="form-row">
+      <div class="field"><label>Notas / observações</label>
+        <textarea class="input" id="d-notes">${esc(r.notes || "")}</textarea></div>
+      <div class="field"><label>Parceiro Externo / Solicitante (para certs públicos)</label>
+        <input class="input" id="d-partner" placeholder="Ex: Empresa Parceira, Terceiro, API Gateway" value="${esc(r.external_partner || '')}"></div>
+    </div>
 
     <div class="field"><label>Pasta da demanda</label>
       <div style="display:flex;gap:6px;align-items:center">
@@ -728,7 +743,10 @@ async function openReq(id, onDone) {
     <textarea class="input mono" id="d-tpl-preview" rows="9" readonly
       style="display:none;margin-top:8px"></textarea>
 
-    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Locais de instalação</h3>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 8px">
+      <h3 style="margin:0;font-size:13px;color:var(--text-dim);text-transform:uppercase">Locais de instalação</h3>
+      <button class="btn btn-sm btn-ghost" id="d-import-locs" title="Recuperar locais de instalação das demandas anteriores deste CN">🔄 Importar locais anteriores</button>
+    </div>
     <div id="d-locs">${r.locations.map(l => `
       <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
         <div><strong>${esc(l.server)}</strong> <span class="muted">${esc(l.path_or_store)}</span>
@@ -752,21 +770,24 @@ async function openReq(id, onDone) {
       <td class="mono muted">${esc((c.thumbprint_sha1 || "").slice(0, 16))}…</td></tr>`).join("")}</tbody></table>`
       : `<div class="muted">Nenhum certificado importado ainda.</div>`}
 
+    ${isInstall || r.external_wo || r.external_crq ? `
     <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">
-      Tickets de Mudança (ServiceNow)
+      Ticket de Instalação (ServiceNow)
       <span class="badge ${r.env === 'PRD' ? 'badge-red' : 'badge-amber'}" style="margin-left:8px;font-weight:normal">
-        ${r.env === 'PRD' ? '🔒 PRD exige CRQ' : '🔧 ' + r.env + ' exige Work Order (WO)'}
+        ${r.env === 'PRD' ? '🔒 PRD — Mudança (CRQ)' : '🔧 ' + r.env + ' — Work Order (WO)'}
       </span>
     </h3>
     <div class="form-row" style="align-items:flex-end">
-      <div class="field"><label>Work Order (WO) ${r.env !== 'PRD' ? '★' : ''}</label>
-        <input class="input mono" id="d-wo-ext" placeholder="WO0012345" value="${esc(r.external_wo || '')}">
-      </div>
-      <div class="field"><label>CRQ ${r.env === 'PRD' ? '★' : ''}</label>
+      ${r.env === 'PRD' ? `
+      <div class="field"><label>Número da Mudança (CRQ)</label>
         <input class="input mono" id="d-crq-ext" placeholder="CRQ0012345" value="${esc(r.external_crq || '')}">
-      </div>
-      <button class="btn" id="d-wo-save">Salvar Tickets</button>
-    </div>
+      </div>` : `
+      <div class="field"><label>Work Order de Instalação (WO)</label>
+        <input class="input mono" id="d-wo-ext" placeholder="WO0012345" value="${esc(r.external_wo || '')}">
+      </div>`}
+      <button class="btn" id="d-wo-save">Salvar Ticket</button>
+    </div>` : ''}
+
     <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Histórico</h3>
     <ul class="timeline">${r.activity.map(a => `
       <li><div>${esc(a.action.replaceAll("_", " "))}</div>
@@ -813,6 +834,15 @@ async function openReq(id, onDone) {
     try { await api("/files/open", { method: "POST", json: { path: r.folder } }); }
     catch (e) { toast(e.message, "err"); }
   };
+  if ($("#d-import-locs")) {
+    $("#d-import-locs").onclick = async () => {
+      try {
+        const res = await api(`/reqs/${id}/import-previous-locations`, { method: "POST" });
+        toast(`✅ Importados ${res.added} locais de demandas anteriores`);
+        closeModal(); openReq(id, onDone);
+      } catch (e) { toast(e.message, "err"); }
+    };
+  }
   $("#l-add").onclick = async () => {
     if (!$("#l-server").value.trim()) return toast("Informe o servidor", "err");
     try {
@@ -834,7 +864,9 @@ async function openReq(id, onDone) {
     try {
       const newStatus = $("#d-status").value;
       await api(`/reqs/${id}`, { method: "PUT", json: {
-        status: newStatus, notes: $("#d-notes").value,
+        status: newStatus,
+        notes: $("#d-notes").value,
+        external_partner: $("#d-partner") ? $("#d-partner").value : undefined,
       }});
       closeModal(); toast("Demanda atualizada"); onDone && onDone();
       // Ao concluir geração/recebimento, avançar mesma REQ para instalação
@@ -849,18 +881,19 @@ async function openReq(id, onDone) {
     } catch (e) { toast(e.message, "err"); }
   };
 
-  // Tickets externos (WO/CRQ)
+  // Ticket externo de instalação (WO para não-PRD, CRQ para PRD)
   if ($("#d-wo-save")) {
     $("#d-wo-save").onclick = async () => {
       try {
-        await api(`/reqs/${id}`, { method: "PUT", json: { 
-          external_wo: $("#d-wo-ext").value,
-          external_crq: $("#d-crq-ext").value
-        } });
-        toast("Tickets salvos");
+        const payload = r.env === 'PRD'
+          ? { external_crq: $("#d-crq-ext") ? $("#d-crq-ext").value : '' }
+          : { external_wo: $("#d-wo-ext") ? $("#d-wo-ext").value : '' };
+        await api(`/reqs/${id}`, { method: "PUT", json: payload });
+        toast("Ticket de instalação salvo");
       } catch (e) { toast(e.message, "err"); }
     };
   }
+
 
   $("#d-delete").onclick = async () => {
     if (!confirm(`Excluir a demanda ${r.req_number}? O histórico e locais serão removidos.`)) return;
