@@ -380,21 +380,26 @@ def init_db():
                 pass
         version = 12
 
-    if version == 12 or version == 13:
+    if version >= 12 and version < 15:
         for col_sql in [
             "ALTER TABLE reqs ADD COLUMN external_crq TEXT DEFAULT ''",
             "ALTER TABLE reqs ADD COLUMN external_partner TEXT DEFAULT ''",
+            "ALTER TABLE reqs ADD COLUMN partner_email TEXT DEFAULT ''",
+            "ALTER TABLE reqs ADD COLUMN partner_registration TEXT DEFAULT ''",
             "ALTER TABLE certificates ADD COLUMN external_partner TEXT DEFAULT ''",
+            "ALTER TABLE certificates ADD COLUMN partner_email TEXT DEFAULT ''",
+            "ALTER TABLE certificates ADD COLUMN partner_registration TEXT DEFAULT ''",
         ]:
             try:
                 conn.execute(col_sql)
             except sqlite3.OperationalError:
                 pass
-        version = 14
+        version = 15
 
     if version > 0:
         conn.execute(f"PRAGMA user_version = {version}")
         conn.commit()
+
 
     # Revisa e remove CHECK constraints legados na tabela certificates
     _fix_certificates_check_constraint(conn)
@@ -442,8 +447,11 @@ def _fix_certificates_check_constraint(conn):
                 cert_category TEXT NOT NULL DEFAULT '',
                 lifecycle_status TEXT NOT NULL DEFAULT 'em_inventario',
                 ownership TEXT NOT NULL DEFAULT 'interno',
-                external_partner TEXT DEFAULT ''
+                external_partner TEXT DEFAULT '',
+                partner_email TEXT DEFAULT '',
+                partner_registration TEXT DEFAULT ''
             );
+
         """)
         conn.execute(f"INSERT INTO certificates ({col_list}) SELECT {col_list} FROM certificates_temp")
         conn.execute("DROP TABLE certificates_temp")

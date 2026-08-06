@@ -666,6 +666,11 @@ function fillTemplate(content, r) {
     parceiro_externo: r.external_partner || cert.external_partner || "",
     parceiro: r.external_partner || cert.external_partner || "",
     external_partner: r.external_partner || cert.external_partner || "",
+    email_parceiro: r.partner_email || cert.partner_email || "",
+    partner_email: r.partner_email || cert.partner_email || "",
+    matricula_parceiro: r.partner_registration || cert.partner_registration || "",
+    partner_registration: r.partner_registration || cert.partner_registration || "",
+
 
     // Notes / Observações
     notas: r.notes || "",
@@ -721,14 +726,36 @@ async function openReq(id, onDone) {
           <button class="btn btn-sm" id="d-pwd-regen" title="Regenerar">🎲</button>
         </div></div>
     </div>
-    <div class="form-row">
+    ${(cert.cert_category && cert.cert_category.includes('sepro')) || r.cn.includes('serpro') ? `
+    <div class="panel mt" style="background:var(--accent-soft);border:1px solid var(--accent);padding:10px 14px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div><strong>🌐 Certificado Serpro / ICP-Brasil</strong>
+          <div class="muted">Acesse a plataforma Serpro para avisos, emissão e validação presencial.</div></div>
+        <a href="https://certificados.serpro.gov.br" target="_blank" class="btn btn-sm btn-primary">Portal Serpro ↗</a>
+      </div>
+    </div>` : ''}
+
+    <div class="form-row mt">
       <div class="field"><label>Notas / observações</label>
-        <textarea class="input" id="d-notes">${esc(r.notes || "")}</textarea></div>
-      <div class="field"><label>Parceiro Externo / Solicitante (para certs públicos)</label>
-        <input class="input" id="d-partner" placeholder="Ex: Empresa Parceira, Terceiro, API Gateway" value="${esc(r.external_partner || '')}"></div>
+        <textarea class="input" id="d-notes" rows="2">${esc(r.notes || "")}</textarea></div>
     </div>
 
-    <div class="field"><label>Pasta da demanda</label>
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">
+      Parceiro Externo / Solicitante (para Certificados Públicos)
+    </h3>
+    <div class="form-row">
+      <div class="field"><label>Nome / Empresa Parceira</label>
+        <input class="input" id="d-partner" placeholder="Ex: Terceiro X, Gateway Y" value="${esc(r.external_partner || (cert && cert.external_partner) || '')}"></div>
+      <div class="field"><label>E-mail do Parceiro</label>
+        <input class="input" id="d-partner-email" placeholder="parceiro@empresa.com" value="${esc(r.partner_email || (cert && cert.partner_email) || '')}"></div>
+      <div class="field"><label>Matrícula / ID</label>
+        <input class="input mono" id="d-partner-reg" placeholder="MAT-12345" value="${esc(r.partner_registration || (cert && cert.partner_registration) || '')}"></div>
+    </div>
+    <div style="margin-top:6px">
+      <button class="btn btn-sm btn-ghost" id="d-notify-partner">📩 Notificar Parceiro via Template</button>
+    </div>
+
+    <div class="field mt"><label>Pasta da demanda</label>
       <div style="display:flex;gap:6px;align-items:center">
         <input class="input mono" value="${esc(r.folder)}" readonly>
         <button class="btn btn-sm" id="d-folder-make">Criar</button>
@@ -771,23 +798,35 @@ async function openReq(id, onDone) {
       <td class="mono muted">${esc((c.thumbprint_sha1 || "").slice(0, 16))}…</td></tr>`).join("")}</tbody></table>`
       : `<div class="muted">Nenhum certificado importado ainda.</div>`}
 
-    ${isInstall || r.external_wo || r.external_crq ? `
-    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">
-      Ticket de Instalação (ServiceNow)
-      <span class="badge ${r.env === 'PRD' ? 'badge-red' : 'badge-amber'}" style="margin-left:8px;font-weight:normal">
-        ${r.env === 'PRD' ? '🔒 PRD — Mudança (CRQ)' : '🔧 ' + r.env + ' — Work Order (WO)'}
-      </span>
-    </h3>
-    <div class="form-row" style="align-items:flex-end">
-      ${r.env === 'PRD' ? `
-      <div class="field"><label>Número da Mudança (CRQ)</label>
-        <input class="input mono" id="d-crq-ext" placeholder="CRQ0012345" value="${esc(r.external_crq || '')}">
+    ${r.env === 'PRD' ? `
+      ${(r.certificates.length > 0 || ['cert_emitido','instalado','concluida'].includes(r.status) || r.external_crq || isInstall) ? `
+      <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">
+        Ticket de Instalação em Produção
+        <span class="badge badge-red" style="margin-left:8px;font-weight:normal">🔒 PRD — Mudança (CRQ)</span>
+      </h3>
+      <div class="form-row" style="align-items:flex-end">
+        <div class="field"><label>Número da Mudança (CRQ)</label>
+          <input class="input mono" id="d-crq-ext" placeholder="CRQ0012345" value="${esc(r.external_crq || '')}">
+        </div>
+        <button class="btn" id="d-wo-save">Salvar CRQ</button>
       </div>` : `
-      <div class="field"><label>Work Order de Instalação (WO)</label>
-        <input class="input mono" id="d-wo-ext" placeholder="WO0012345" value="${esc(r.external_wo || '')}">
+      <div class="panel mt" style="background:var(--bg-sunken);padding:10px 14px;border-left:3px solid var(--amber)">
+        <span class="muted">🔒 <strong>Ambiente PRD:</strong> O campo de Mudança (CRQ) estará disponível após a geração/emissão do certificado.</span>
       </div>`}
-      <button class="btn" id="d-wo-save">Salvar Ticket</button>
-    </div>` : ''}
+    ` : `
+      ${isInstall || r.external_wo ? `
+      <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">
+        Work Order de Instalação
+        <span class="badge badge-amber" style="margin-left:8px;font-weight:normal">🔧 ${r.env} — Work Order (WO)</span>
+      </h3>
+      <div class="form-row" style="align-items:flex-end">
+        <div class="field"><label>Work Order de Instalação (WO)</label>
+          <input class="input mono" id="d-wo-ext" placeholder="WO0012345" value="${esc(r.external_wo || '')}">
+        </div>
+        <button class="btn" id="d-wo-save">Salvar WO</button>
+      </div>` : ''}
+    `}
+
 
     <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Histórico</h3>
     <ul class="timeline">${r.activity.map(a => `
@@ -861,6 +900,17 @@ async function openReq(id, onDone) {
     csrPrefill = { req_id: id, cn: r.cn, req_number: r.req_number };
     closeModal(); location.hash = "#/csr";
   };
+  if ($("#d-notify-partner")) {
+    $("#d-notify-partner").onclick = () => {
+      const partnerTpl = tpls.find(t => t.name.toLowerCase().includes("parceiro") || t.name.toLowerCase().includes("vencimento")) || tpls[0];
+      if (partnerTpl) {
+        $("#d-tpl").value = partnerTpl.id;
+        $("#d-tpl").onchange();
+        $("#d-tpl-preview").scrollIntoView({ behavior: 'smooth', block: 'center' });
+        toast("Template de notificação gerado abaixo!");
+      }
+    };
+  }
   $("#d-save").onclick = async () => {
     try {
       const newStatus = $("#d-status").value;
@@ -868,8 +918,11 @@ async function openReq(id, onDone) {
         status: newStatus,
         notes: $("#d-notes").value,
         external_partner: $("#d-partner") ? $("#d-partner").value : undefined,
+        partner_email: $("#d-partner-email") ? $("#d-partner-email").value : undefined,
+        partner_registration: $("#d-partner-reg") ? $("#d-partner-reg").value : undefined,
       }});
       closeModal(); toast("Demanda atualizada"); onDone && onDone();
+
       // Ao concluir geração/recebimento, avançar mesma REQ para instalação
       if (newStatus === 'concluida' && (r.demand_type === 'geracao' || r.demand_type === 'recebimento')) {
         try {
