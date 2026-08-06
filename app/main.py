@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import init_db
-from .routers import (certs, csr, dashboard, docs, files, passwords, reqs,
+from .routers import (certs, csr, dashboard, docs, files, monitor, passwords, reqs,
                       settings, tasks, templates, validate, auth, users, work_orders)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -16,8 +16,9 @@ app = FastAPI(title="CertHub", version="2.0")
 init_db()
 
 for router in (reqs.router, certs.router, csr.router, passwords.router,
-               dashboard.router, docs.router, files.router, settings.router,
-               tasks.router, templates.router, validate.router, work_orders.router):
+               dashboard.router, docs.router, files.router, monitor.router,
+               settings.router, tasks.router, templates.router, validate.router,
+               work_orders.router):
     app.include_router(router, prefix="/api")
 
 app.include_router(auth.router)

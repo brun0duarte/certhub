@@ -115,3 +115,11 @@ def update_my_profile(req: MyProfileUpdate, conn=Depends(get_db), user=Depends(r
         )
     conn.commit()
     return {"message": "ok"}
+
+@router.get("/lookup")
+def lookup_users(conn=Depends(get_db)):
+    """Returns active users for assignment dropdowns (no admin required)."""
+    rows = conn.execute(
+        "SELECT id, username, display_name, email, role FROM users WHERE active=1 ORDER BY display_name"
+    ).fetchall()
+    return [dict(r) for r in rows]
