@@ -164,8 +164,18 @@ def get_req(req_id: int):
         req = dict(row)
         req["locations"] = [dict(r) for r in conn.execute(
             "SELECT * FROM install_locations WHERE req_id=? ORDER BY id", (req_id,))]
-        req["certificates"] = [dict(r) for r in conn.execute(
+        certs = [dict(r) for r in conn.execute(
             "SELECT * FROM certificates WHERE req_id=? ORDER BY created_at DESC", (req_id,))]
+        if not certs and req.get("cn"):
+            certs = [dict(r) for r in conn.execute(
+                "SELECT * FROM certificates WHERE cn=? ORDER BY created_at DESC", (req["cn"],))]
+        if not certs:
+            certs = [dict(r) for r in conn.execute(
+                """SELECT c.* FROM certificates c
+                   JOIN install_locations l ON l.cert_id = c.id
+                   WHERE l.req_id=? ORDER BY c.created_at DESC""", (req_id,))]
+        req["certificates"] = certs
+
         req["activity"] = [dict(r) for r in conn.execute(
             "SELECT * FROM activity_log WHERE req_id=? ORDER BY id DESC LIMIT 50", (req_id,))]
         base = get_setting(conn, "base_dir")
