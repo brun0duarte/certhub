@@ -9,7 +9,8 @@ DB_PATH = DATA_DIR / "certhub.db"
 
 ENVS = ["PRD", "TQS", "HMP", "DES"]
 REQ_STATUSES = ["aberta", "csr_gerada", "cert_emitido", "instalado", "concluida", "cancelada"]
-DEMAND_TYPES = ["emissao", "renovacao", "revogacao", "usuario", "instalacao_existente", "outro"]
+DEMAND_TYPES = ['geracao', 'recebimento', 'revogacao', 'instalacao']
+OWNERSHIP_TYPES = ['interno', 'externo']
 TASK_LANES = ["backlog", "a_fazer", "em_andamento", "concluido"]
 TASK_PRIORITIES = ["alta", "media", "baixa"]
 CERT_TYPES = ["servidor", "cliente_mtls", "ambos", "ca"]
@@ -23,6 +24,7 @@ INSTALL_LOCATIONS = [
     "secrets_manager", "azion", "akamai", "iis", "apache", "nginx",
     "tomcat", "outro",
 ]
+INSTALL_STATUSES = ['pendente', 'instalado', 'falhou']
 
 WO_TYPES = ['WO', 'CRQ']
 WO_STATUSES = ['aberta', 'em_andamento', 'concluida', 'cancelada']
@@ -218,11 +220,33 @@ CREATE TABLE work_orders (
 );
 """
 
-LIFECYCLE_STATUSES = ['pedido', 'instalado', 'em_inventario', 'reservado', 'excluir', 'fim_de_vida']
+LIFECYCLE_STATUSES = ['pedido', 'instalado', 'em_inventario', 'reservado', 'excluir', 'fim_de_vida', 'em_renovacao']
 
 SCHEMA_V8 = """
 ALTER TABLE certificates ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'em_inventario'
     CHECK (lifecycle_status IN ('pedido','instalado','em_inventario','reservado','excluir','fim_de_vida'));
+"""
+
+SCHEMA_V9 = """
+ALTER TABLE certificates ADD COLUMN ownership TEXT NOT NULL DEFAULT 'interno';
+ALTER TABLE reqs ADD COLUMN parent_req_id INTEGER REFERENCES reqs(id) ON DELETE SET NULL;
+"""
+
+SCHEMA_V10 = """
+ALTER TABLE install_locations ADD COLUMN status TEXT NOT NULL DEFAULT 'pendente';
+ALTER TABLE install_locations ADD COLUMN completed_at TEXT;
+ALTER TABLE work_orders ADD COLUMN external_number TEXT DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS wo_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    wo_id INTEGER NOT NULL REFERENCES work_orders(id) ON DELETE CASCADE,
+    task_type TEXT NOT NULL DEFAULT 'custom',
+    title TEXT NOT NULL DEFAULT '',
+    notes TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pendente',
+    completed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 """
 
 DEFAULT_SETTINGS = {
@@ -291,6 +315,26 @@ def init_db():
     if version < 8:
         conn.executescript(SCHEMA_V8)
         conn.execute("PRAGMA user_version = 8")
+        conn.commit()
+    if version < 9:
+        for stmt in SCHEMA_V9.strip().split(';'):
+            stmt = stmt.strip()
+            if stmt:
+                try:
+                    conn.executescript(stmt + ';')
+                except Exception:
+                    pass  # column already exists
+        conn.execute("PRAGMA user_version = 9")
+        conn.commit()
+    if version < 10:
+        for stmt in SCHEMA_V10.strip().split(';'):
+            stmt = stmt.strip()
+            if stmt:
+                try:
+                    conn.executescript(stmt + ';')
+                except Exception:
+                    pass  # table/column already exists
+        conn.execute("PRAGMA user_version = 10")
         conn.commit()
     conn.close()
 
