@@ -548,6 +548,7 @@ views.instalacao = async () => {
 };
 
 async function newDemandModal(defaultType, opts = {}, onDone) {
+  const isPrd = (opts.env || 'PRD') === 'PRD';
   modal(`Nova Demanda — ${DEMAND_TYPES[defaultType] || defaultType}`, `
     <div class="form-row">
       <div class="field"><label>Número REQ (ServiceNow)</label>
@@ -565,6 +566,12 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
       <div class="field"><label>CN (Common Name)</label>
         <input class="input" id="nd-cn" placeholder="www.exemplo.com.br" value="${esc(opts.cn||'')}"></div>
     </div>
+    <div class="form-row">
+      <div class="field" id="nd-ticket-container">
+        <label id="nd-ticket-label">${isPrd ? 'Número da CRQ (ServiceNow — PRD)' : 'Work Order / WO (ServiceNow)'}</label>
+        <input class="input mono" id="nd-ticket" placeholder="${isPrd ? 'CRQ0012345' : 'WO0012345'}">
+      </div>
+    </div>
     <div class="field"><label>Notas / observações</label>
       <textarea class="input" id="nd-notes" placeholder="Detalhes da demanda, solicitante, sistema…"></textarea></div>
     <div class="checkbox-row"><input type="checkbox" id="nd-auto" checked>
@@ -572,15 +579,28 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
   `, { footer: `<button class="btn" data-close>Cancelar</button>
                 <button class="btn btn-primary" id="nd-save">Criar demanda</button>` });
 
+  const updateTicketField = () => {
+    const env = $("#nd-env").value;
+    const prd = env === 'PRD';
+    $("#nd-ticket-label").textContent = prd ? 'Número da CRQ (ServiceNow — PRD)' : 'Work Order / WO (ServiceNow — ' + env + ')';
+    $("#nd-ticket").placeholder = prd ? 'CRQ0012345' : 'WO0012345';
+  };
+  $("#nd-env").onchange = updateTicketField;
+
   $("#nd-save").onclick = async () => {
     try {
+      const env = $("#nd-env").value;
+      const ticketVal = $("#nd-ticket").value.trim();
+      const isPrdEnv = env === 'PRD';
       const row = await api("/reqs", { method: "POST", json: {
         req_number: $("#nd-req").value || undefined,
         cn: $("#nd-cn").value,
-        env: $("#nd-env").value,
+        env: env,
         notes: $("#nd-notes").value,
         demand_type: $("#nd-type").value,
         auto_password: $("#nd-auto").checked,
+        external_crq: isPrdEnv ? ticketVal : '',
+        external_wo: !isPrdEnv ? ticketVal : '',
       }});
       // If created from monitor, flag the cert as em_renovacao
       if (opts.certId) {
@@ -592,6 +612,7 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
     } catch (e) { toast(e.message, "err"); }
   };
 }
+
 
 /* ---------------- Demandas (legado) ---------------- */
 
@@ -675,12 +696,17 @@ async function openReq(id, onDone) {
       <td class="mono muted">${esc((c.thumbprint_sha1 || "").slice(0, 16))}…</td></tr>`).join("")}</tbody></table>`
       : `<div class="muted">Nenhum certificado importado ainda.</div>`}
 
-    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Tickets de Mudança (ServiceNow)</h3>
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">
+      Tickets de Mudança (ServiceNow)
+      <span class="badge ${r.env === 'PRD' ? 'badge-red' : 'badge-amber'}" style="margin-left:8px;font-weight:normal">
+        ${r.env === 'PRD' ? '🔒 PRD exige CRQ' : '🔧 ' + r.env + ' exige Work Order (WO)'}
+      </span>
+    </h3>
     <div class="form-row" style="align-items:flex-end">
-      <div class="field"><label>Work Order (WO)</label>
+      <div class="field"><label>Work Order (WO) ${r.env !== 'PRD' ? '★' : ''}</label>
         <input class="input mono" id="d-wo-ext" placeholder="WO0012345" value="${esc(r.external_wo || '')}">
       </div>
-      <div class="field"><label>CRQ</label>
+      <div class="field"><label>CRQ ${r.env === 'PRD' ? '★' : ''}</label>
         <input class="input mono" id="d-crq-ext" placeholder="CRQ0012345" value="${esc(r.external_crq || '')}">
       </div>
       <button class="btn" id="d-wo-save">Salvar Tickets</button>
