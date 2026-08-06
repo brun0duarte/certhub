@@ -618,21 +618,77 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
 
 function fillTemplate(content, r) {
   const cert = (r.certificates && r.certificates[0]) || {};
-  const locais = (r.locations || [])
+  const locList = r.locations || [];
+  const locaisStr = locList
     .map(l => l.server + (l.path_or_store ? ` (${l.path_or_store})` : "")).join("; ");
+  const servidoresStr = [...new Set(locList.map(l => l.server).filter(Boolean))].join(", ");
+
   const map = {
-    req: r.req_number, cn: r.cn, env: r.env,
-    status: STATUS_LABEL[r.status] || r.status,
-    senha: r.password, notas: r.notes,
+    // REQ / Demanda
+    req: r.req_number || "",
+    req_number: r.req_number || "",
+    demanda: r.req_number || "",
+
+    // CN / Domain
+    cn: r.cn || "",
+    common_name: r.cn || "",
+    url: r.cn || "",
+
+    // Environment
+    env: r.env || "",
+    ambiente: r.env || "",
+
+    // Status
+    status: STATUS_LABEL[r.status] || r.status || "",
+
+    // Demand Type
+    tipo: DEMAND_TYPES[r.demand_type] || r.demand_type || "",
+    demand_type: DEMAND_TYPES[r.demand_type] || r.demand_type || "",
+
+    // ServiceNow Tickets (WO & CRQ)
+    wo: r.external_wo || r.wo_number || "",
+    external_wo: r.external_wo || r.wo_number || "",
+    work_order: r.external_wo || r.wo_number || "",
+    crq: r.external_crq || "",
+    external_crq: r.external_crq || "",
+    mudanca: r.external_crq || r.external_wo || "",
+
+    // Password / Senha
+    senha: r.password || "",
+    password: r.password || "",
+
+    // Notes / Observações
+    notas: r.notes || "",
+    notes: r.notes || "",
+    observacoes: r.notes || "",
+
+    // Certificate details
     vencimento: cert.not_after ? fmtDate(cert.not_after) : "",
-    emissor: cert.issuer, sans: cert.sans, serial: cert.serial,
-    thumbprint: cert.thumbprint_sha1, locais,
+    validade: cert.not_after ? fmtDate(cert.not_after) : "",
+    not_after: cert.not_after ? fmtDate(cert.not_after) : "",
+    emissor: cert.issuer || "",
+    issuer: cert.issuer || "",
+    sans: cert.sans || "",
+    serial: cert.serial || "",
+    thumbprint: cert.thumbprint_sha1 || "",
+    fingerprint: cert.thumbprint_sha1 || "",
+
+    // Locations / Servers
+    locais: locaisStr,
+    locations: locaisStr,
+    servidores: servidoresStr || locaisStr,
+    servidor: servidoresStr || locaisStr,
+
+    // Date
     data: fmtDate(new Date().toISOString()),
+    date: fmtDate(new Date().toISOString()),
   };
+
   return content.replace(/\{(\w+)\}/g, (m, k) =>
     map[k] !== undefined && map[k] !== null && String(map[k]).trim() !== ""
       ? String(map[k]) : `[${k}?]`);
 }
+
 
 async function openReq(id, onDone) {
   const [r, tpls] = await Promise.all([api(`/reqs/${id}`), api("/templates")]);
