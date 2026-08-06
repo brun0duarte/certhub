@@ -31,6 +31,7 @@ class ReqUpdate(BaseModel):
     status: str | None = None
     demand_type: str | None = None
     external_wo: str | None = None
+    external_crq: str | None = None
 
 
 class LocationIn(BaseModel):

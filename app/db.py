@@ -369,10 +369,22 @@ def init_db():
         ]:
             try:
                 conn.execute(col_sql)
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
-        conn.commit()
-        conn.execute("PRAGMA user_version = 12")
+        version = 12
+
+    if version == 12:
+        for col_sql in [
+            "ALTER TABLE reqs ADD COLUMN external_crq TEXT DEFAULT ''",
+        ]:
+            try:
+                conn.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass
+        version = 13
+
+    if version > 0:
+        conn.execute(f"PRAGMA user_version = {version}")
         conn.commit()
     conn.close()
 

@@ -675,15 +675,16 @@ async function openReq(id, onDone) {
       <td class="mono muted">${esc((c.thumbprint_sha1 || "").slice(0, 16))}…</td></tr>`).join("")}</tbody></table>`
       : `<div class="muted">Nenhum certificado importado ainda.</div>`}
 
-    ${isInstall ? `
-    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Mudança de infraestrutura (WO/CRQ)</h3>
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Tickets de Mudança (ServiceNow)</h3>
     <div class="form-row" style="align-items:flex-end">
-      <div class="field"><label>Número externo (WO/CRQ do ServiceNow)</label>
-        <input class="input mono" id="d-wo-ext" placeholder="WO0012345 ou CRQ0012345" value="${esc(r.external_wo || '')}">
+      <div class="field"><label>Work Order (WO)</label>
+        <input class="input mono" id="d-wo-ext" placeholder="WO0012345" value="${esc(r.external_wo || '')}">
       </div>
-      <button class="btn" id="d-wo-save">Salvar</button>
-    </div>` : ''}
-
+      <div class="field"><label>CRQ</label>
+        <input class="input mono" id="d-crq-ext" placeholder="CRQ0012345" value="${esc(r.external_crq || '')}">
+      </div>
+      <button class="btn" id="d-wo-save">Salvar Tickets</button>
+    </div>
     <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Histórico</h3>
     <ul class="timeline">${r.activity.map(a => `
       <li><div>${esc(a.action.replaceAll("_", " "))}</div>
@@ -766,12 +767,15 @@ async function openReq(id, onDone) {
     } catch (e) { toast(e.message, "err"); }
   };
 
-  // WO/CRQ externa (apenas demandas de instalação)
-  if (isInstall && $("#d-wo-save")) {
+  // Tickets externos (WO/CRQ)
+  if ($("#d-wo-save")) {
     $("#d-wo-save").onclick = async () => {
       try {
-        await api(`/reqs/${id}`, { method: "PUT", json: { external_wo: $("#d-wo-ext").value } });
-        toast("WO/CRQ salva");
+        await api(`/reqs/${id}`, { method: "PUT", json: { 
+          external_wo: $("#d-wo-ext").value,
+          external_crq: $("#d-crq-ext").value
+        } });
+        toast("Tickets salvos");
       } catch (e) { toast(e.message, "err"); }
     };
   }
