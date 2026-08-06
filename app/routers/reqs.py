@@ -14,13 +14,14 @@ REQ_FORMAT = re.compile(r"^REQ\d{7}$", re.IGNORECASE)
 
 
 class ReqIn(BaseModel):
-    req_number: str
+    req_number: str | None = None
     cn: str
     env: str
     notes: str = ""
     password: str | None = None
     auto_password: bool = True
-    demand_type: str = "emissao"
+    demand_type: str = "geracao"
+    parent_req_id: int | None = None
 
 
 class ReqUpdate(BaseModel):
@@ -46,7 +47,7 @@ def _auto_password(conn) -> str:
 
 
 @router.get("/reqs")
-def list_reqs(search: str = "", env: str = "", status: str = ""):
+def list_reqs(search: str = "", env: str = "", status: str = "", demand_type: str = ""):
     conn = get_db()
     sql = """SELECT r.*,
                     (SELECT COUNT(*) FROM certificates c WHERE c.req_id = r.id) AS cert_count,
@@ -62,6 +63,10 @@ def list_reqs(search: str = "", env: str = "", status: str = ""):
     if status:
         sql += " AND r.status = ?"
         params.append(status)
+    if demand_type:
+        types = [t.strip() for t in demand_type.split(',')]
+        sql += " AND r.demand_type IN (" + ",".join("?" for _ in types) + ")"
+        params.extend(types)
     sql += " ORDER BY r.created_at DESC"
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     conn.close()
@@ -70,15 +75,42 @@ def list_reqs(search: str = "", env: str = "", status: str = ""):
 
 @router.post("/reqs")
 def create_req(body: ReqIn):
-    req_number = body.req_number.strip().upper()
-    if not REQ_FORMAT.match(req_number):
-        raise HTTPException(400, "Número de REQ inválido — formato esperado: REQ0012345")
     conn = get_db()
+    # Auto-generate REQ number if not provided
+    if not body.req_number:
+        cur = conn.execute(
+            "SELECT req_number FROM reqs WHERE req_number LIKE 'REQ%' "
+            "ORDER BY CAST(SUBSTR(req_number, 4) AS INTEGER) DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        next_num = int(row[0][3:]) + 1 if row else 1
+        req_number = f"REQ{next_num:07d}"
+    else:
+        req_number = body.req_number.strip().upper()
+        if not REQ_FORMAT.match(req_number):
+            conn.close()
+            raise HTTPException(400, "Número de REQ inválido — formato esperado: REQ0012345")
+
+    # Block duplicate active demands
+    if body.demand_type in ('geracao', 'recebimento'):
+        dup = conn.execute(
+            "SELECT req_number FROM reqs WHERE cn=? AND env=? AND demand_type=? "
+            "AND status NOT IN ('concluida','cancelada')",
+            (body.cn.strip(), body.env, body.demand_type)
+        ).fetchone()
+        if dup:
+            conn.close()
+            raise HTTPException(409,
+                f"Já existe demanda ativa ({dup[0]}) para este CN/ambiente. "
+                f"Conclua ou cancele a anterior antes de criar nova.")
+
     password = body.password or (_auto_password(conn) if body.auto_password else None)
     try:
         cur = conn.execute(
-            "INSERT INTO reqs (req_number, cn, env, password, notes, demand_type) VALUES (?,?,?,?,?,?)",
-            (req_number, body.cn.strip(), body.env, password, body.notes, body.demand_type),
+            "INSERT INTO reqs (req_number, cn, env, password, notes, demand_type, parent_req_id) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (req_number, body.cn.strip(), body.env, password, body.notes,
+             body.demand_type, body.parent_req_id),
         )
     except Exception:
         conn.close()
@@ -137,13 +169,6 @@ def update_req(req_id: int, body: ReqUpdate):
             log_activity(conn, "status_alterado", f"{row['status']} → {fields['status']}", req_id)
         conn.commit()
     updated = dict(conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone())
-    
-    if updated["status"] == "cert_emitido":
-        existing_wo = conn.execute("SELECT id FROM work_orders WHERE parent_req_id=?", (req_id,)).fetchone()
-        if not existing_wo:
-            updated["suggest_wo"] = True
-            updated["suggested_wo_type"] = "CRQ" if updated["env"] == "PRD" else "WO"
-
     conn.close()
     return updated
 
@@ -160,6 +185,31 @@ def delete_req(req_id: int):
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+@router.post("/reqs/{req_id}/advance-to-installation")
+def advance_to_installation(req_id: int):
+    """Avança REQ de geração/recebimento para fase de instalação."""
+    conn = get_db()
+    row = conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Demanda não encontrada")
+    if row['demand_type'] not in ('geracao', 'recebimento'):
+        conn.close()
+        raise HTTPException(400, "Só demandas de geração/recebimento podem avançar para instalação")
+
+    conn.execute("""
+        UPDATE reqs SET demand_type='instalacao', status='aberta',
+                       updated_at=datetime('now','localtime')
+        WHERE id=?
+    """, (req_id,))
+    log_activity(conn, "avancou_instalacao",
+                 f"Demanda {row['req_number']} avançou para fase de instalação", req_id)
+    conn.commit()
+    updated = dict(conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone())
+    conn.close()
+    return updated
 
 
 @router.post("/reqs/{req_id}/password/regenerate")
@@ -221,6 +271,30 @@ def delete_location(loc_id: int):
         raise HTTPException(404, "Local não encontrado")
     conn.execute("DELETE FROM install_locations WHERE id=?", (loc_id,))
     log_activity(conn, "local_removido", f"{row['server']} · {row['path_or_store']}", row["req_id"])
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+class LocationStatusUpdate(BaseModel):
+    status: str  # 'pendente', 'instalado', 'falhou'
+
+@router.put("/locations/{loc_id}/status")
+def update_location_status(loc_id: int, body: LocationStatusUpdate):
+    """Atualiza status de instalação de um local específico."""
+    if body.status not in ('pendente', 'instalado', 'falhou'):
+        raise HTTPException(400, "Status inválido. Use: pendente, instalado, falhou")
+    conn = get_db()
+    loc = conn.execute("SELECT * FROM install_locations WHERE id=?", (loc_id,)).fetchone()
+    if not loc:
+        conn.close()
+        raise HTTPException(404, "Local não encontrado")
+    completed = "datetime('now','localtime')" if body.status == 'instalado' else "NULL"
+    conn.execute(f"""
+        UPDATE install_locations
+        SET status = ?, completed_at = {completed}
+        WHERE id = ?
+    """, (body.status, loc_id))
     conn.commit()
     conn.close()
     return {"ok": True}
