@@ -249,6 +249,21 @@ CREATE TABLE IF NOT EXISTS wo_tasks (
 );
 """
 
+# V12: Fix wo_tasks (DB may have been at v11 with crq_tasks instead of wo_tasks)
+# Also ensure external_number and install_location status columns exist
+SCHEMA_V12 = """
+CREATE TABLE IF NOT EXISTS wo_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    wo_id INTEGER NOT NULL REFERENCES work_orders(id) ON DELETE CASCADE,
+    task_type TEXT NOT NULL DEFAULT 'custom',
+    title TEXT NOT NULL DEFAULT '',
+    notes TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pendente',
+    completed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+"""
+
 DEFAULT_SETTINGS = {
     "base_dir": str(DATA_DIR / "files"),
     "folder_template": "{env}/{req}_{cn}",
@@ -335,6 +350,28 @@ def init_db():
                 except Exception:
                     pass  # table/column already exists
         conn.execute("PRAGMA user_version = 10")
+        conn.commit()
+    if version < 12:
+        # Ensure wo_tasks exists (may have been crq_tasks from old session)
+        for stmt in SCHEMA_V12.strip().split(';'):
+            stmt = stmt.strip()
+            if stmt:
+                try:
+                    conn.executescript(stmt + ';')
+                except Exception:
+                    pass
+        # Also fix missing columns that V10 may have missed (DB was at v11)
+        for col_sql in [
+            "ALTER TABLE work_orders ADD COLUMN external_number TEXT DEFAULT ''",
+            "ALTER TABLE install_locations ADD COLUMN status TEXT NOT NULL DEFAULT 'pendente'",
+            "ALTER TABLE install_locations ADD COLUMN completed_at TEXT",
+        ]:
+            try:
+                conn.execute(col_sql)
+            except Exception:
+                pass
+        conn.commit()
+        conn.execute("PRAGMA user_version = 12")
         conn.commit()
     conn.close()
 
