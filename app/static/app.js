@@ -732,10 +732,12 @@ async function openReq(id, onDone) {
   };
   $("#l-add").onclick = async () => {
     if (!$("#l-server").value.trim()) return toast("Informe o servidor", "err");
-    await api(`/reqs/${id}/locations`, { method: "POST", json: {
-      server: $("#l-server").value, path_or_store: $("#l-path").value,
-    }});
-    closeModal(); openReq(id, onDone);
+    try {
+      await api(`/reqs/${id}/locations`, { method: "POST", json: {
+        server: $("#l-server").value, path_or_store: $("#l-path").value,
+      }});
+      closeModal(); openReq(id, onDone);
+    } catch (e) { toast(e.message, "err"); }
   };
   $$("[data-del-loc]").forEach(el => el.onclick = async () => {
     await api(`/locations/${el.dataset.delLoc}`, { method: "DELETE" });
@@ -746,20 +748,22 @@ async function openReq(id, onDone) {
     closeModal(); location.hash = "#/csr";
   };
   $("#d-save").onclick = async () => {
-    const newStatus = $("#d-status").value;
-    await api(`/reqs/${id}`, { method: "PUT", json: {
-      status: newStatus, notes: $("#d-notes").value,
-    }});
-    closeModal(); toast("Demanda atualizada"); onDone && onDone();
-    // Ao concluir geração/recebimento, avançar mesma REQ para instalação
-    if (newStatus === 'concluida' && (r.demand_type === 'geracao' || r.demand_type === 'recebimento')) {
-      try {
-        await api(`/reqs/${id}/advance-to-installation`, { method: "POST" });
-        toast(`✅ ${r.req_number} avançou para Instalação!`);
-        if (onDone) onDone();
-        location.hash = '#/instalacao';
-      } catch (e) { toast(e.message, 'err'); }
-    }
+    try {
+      const newStatus = $("#d-status").value;
+      await api(`/reqs/${id}`, { method: "PUT", json: {
+        status: newStatus, notes: $("#d-notes").value,
+      }});
+      closeModal(); toast("Demanda atualizada"); onDone && onDone();
+      // Ao concluir geração/recebimento, avançar mesma REQ para instalação
+      if (newStatus === 'concluida' && (r.demand_type === 'geracao' || r.demand_type === 'recebimento')) {
+        try {
+          await api(`/reqs/${id}/advance-to-installation`, { method: "POST" });
+          toast(`✅ ${r.req_number} avançou para Instalação!`);
+          if (onDone) onDone();
+          location.hash = '#/instalacao';
+        } catch (e) { toast(e.message, 'err'); }
+      }
+    } catch (e) { toast(e.message, "err"); }
   };
 
   // WO/CRQ externa (apenas demandas de instalação)

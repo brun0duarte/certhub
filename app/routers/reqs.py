@@ -9,8 +9,7 @@ from ..db import REQ_STATUSES, get_db, get_setting, log_activity
 from ..services import folders, passwordgen
 
 router = APIRouter(tags=["reqs"])
-
-REQ_FORMAT = re.compile(r"^REQ\d{7}$", re.IGNORECASE)
+REQ_FORMAT = re.compile(r"^[A-Z0-9_-]{3,20}$", re.IGNORECASE)
 
 
 class ReqIn(BaseModel):
@@ -90,7 +89,7 @@ def create_req(body: ReqIn):
         req_number = body.req_number.strip().upper()
         if not REQ_FORMAT.match(req_number):
             conn.close()
-            raise HTTPException(400, "Número de REQ inválido — formato esperado: REQ0012345")
+            raise HTTPException(400, "Número inválido — formato esperado: letras, números e hifens (3 a 20 caracteres)")
 
     # Block duplicate active demands
     if body.demand_type in ('geracao', 'recebimento'):
