@@ -31,6 +31,7 @@ class ReqUpdate(BaseModel):
     password: str | None = None
     status: str | None = None
     demand_type: str | None = None
+    external_wo: str | None = None
 
 
 class LocationIn(BaseModel):
@@ -155,7 +156,7 @@ def update_req(req_id: int, body: ReqUpdate):
     if not row:
         conn.close()
         raise HTTPException(404, "Demanda não encontrada")
-    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    fields = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
     if "status" in fields and fields["status"] not in REQ_STATUSES:
         conn.close()
         raise HTTPException(400, f"Status inválido. Use: {', '.join(REQ_STATUSES)}")

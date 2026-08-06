@@ -223,7 +223,27 @@ views.dashboard = async () => {
         &nbsp;·&nbsp;
         ${STATUSES.map(s => `<span class="badge badge-${s}">${STATUS_LABEL[s]}: ${d.by_status[s] || 0}</span>`).join("")}
       </div>
-    </div>`;
+    </div>
+    ${(d.reqs_by_month && d.reqs_by_month.length) || (d.key_types && d.key_types.length) ? `
+    <div class="grid grid-2 mt">
+      ${d.reqs_by_month && d.reqs_by_month.length ? `
+      <div class="panel"><h3>Demandas criadas por mês</h3>
+        ${chartVBars(d.reqs_by_month.map(r => ({ label: r.month, n: r.n })), { fmt: fmtMonth })}
+      </div>` : ''}
+      ${d.key_types && d.key_types.length ? `
+      <div class="panel"><h3>Tipos de chave</h3>
+        ${chartHBars(d.key_types.map(r => ({ label: r.label, n: r.n })))}
+      </div>` : ''}
+      ${d.cert_health ? `
+      <div class="panel"><h3>Saúde dos certificados</h3>
+        ${chartDonut([
+          { label: 'Vencidos', n: d.cert_health.vencidos, color: 'var(--red)' },
+          { label: '≤ 30 dias', n: d.cert_health.ate_30, color: 'var(--amber)' },
+          { label: '31–90 dias', n: d.cert_health.ate_90, color: 'var(--accent)' },
+          { label: '> 90 dias', n: d.cert_health.ok, color: 'var(--green)' },
+        ])}
+      </div>` : ''}
+    </div>` : ''}`;
 };
 
 /* ---------------- Kanban ---------------- */
@@ -530,17 +550,21 @@ views.instalacao = async () => {
 async function newDemandModal(defaultType, opts = {}, onDone) {
   modal(`Nova Demanda — ${DEMAND_TYPES[defaultType] || defaultType}`, `
     <div class="form-row">
+      <div class="field"><label>Número REQ (ServiceNow)</label>
+        <input class="input mono" id="nd-req" placeholder="REQ0012345" value="${esc(opts.req_number||'')}"></div>
       <div class="field"><label>Ambiente</label>
         <select class="input" id="nd-env">${ENVS.map(e => `<option ${e === (opts.env||'PRD') ? 'selected':''}>${e}</option>`).join('')}</select></div>
+    </div>
+    <div class="form-row">
       <div class="field"><label>Tipo</label>
         <select class="input" id="nd-type">
           <option value="geracao" ${defaultType==='geracao'?'selected':''}>Geração</option>
           <option value="recebimento" ${defaultType==='recebimento'?'selected':''}>Recebimento</option>
           <option value="revogacao" ${defaultType==='revogacao'?'selected':''}>Revogação</option>
         </select></div>
+      <div class="field"><label>CN (Common Name)</label>
+        <input class="input" id="nd-cn" placeholder="www.exemplo.com.br" value="${esc(opts.cn||'')}"></div>
     </div>
-    <div class="field"><label>CN (Common Name)</label>
-      <input class="input" id="nd-cn" placeholder="www.exemplo.com.br" value="${esc(opts.cn||'')}"></div>
     <div class="field"><label>Notas / observações</label>
       <textarea class="input" id="nd-notes" placeholder="Detalhes da demanda, solicitante, sistema…"></textarea></div>
     <div class="checkbox-row"><input type="checkbox" id="nd-auto" checked>
@@ -551,6 +575,7 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
   $("#nd-save").onclick = async () => {
     try {
       const row = await api("/reqs", { method: "POST", json: {
+        req_number: $("#nd-req").value || undefined,
         cn: $("#nd-cn").value,
         env: $("#nd-env").value,
         notes: $("#nd-notes").value,
@@ -650,6 +675,15 @@ async function openReq(id, onDone) {
       <td class="mono muted">${esc((c.thumbprint_sha1 || "").slice(0, 16))}…</td></tr>`).join("")}</tbody></table>`
       : `<div class="muted">Nenhum certificado importado ainda.</div>`}
 
+    ${isInstall ? `
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Mudança de infraestrutura (WO/CRQ)</h3>
+    <div class="form-row" style="align-items:flex-end">
+      <div class="field"><label>Número externo (WO/CRQ do ServiceNow)</label>
+        <input class="input mono" id="d-wo-ext" placeholder="WO0012345 ou CRQ0012345" value="${esc(r.external_wo || '')}">
+      </div>
+      <button class="btn" id="d-wo-save">Salvar</button>
+    </div>` : ''}
+
     <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Histórico</h3>
     <ul class="timeline">${r.activity.map(a => `
       <li><div>${esc(a.action.replaceAll("_", " "))}</div>
@@ -727,7 +761,17 @@ async function openReq(id, onDone) {
       } catch (e) { toast(e.message, 'err'); }
     }
   };
-  
+
+  // WO/CRQ externa (apenas demandas de instalação)
+  if (isInstall && $("#d-wo-save")) {
+    $("#d-wo-save").onclick = async () => {
+      try {
+        await api(`/reqs/${id}`, { method: "PUT", json: { external_wo: $("#d-wo-ext").value } });
+        toast("WO/CRQ salva");
+      } catch (e) { toast(e.message, "err"); }
+    };
+  }
+
   $("#d-delete").onclick = async () => {
     if (!confirm(`Excluir a demanda ${r.req_number}? O histórico e locais serão removidos.`)) return;
     await api(`/reqs/${id}`, { method: "DELETE" });
@@ -1102,6 +1146,7 @@ function certDetail(c, onDone) {
         </select></div>
       <button class="btn" id="cd-save-type" style="align-self:flex-end">Salvar tipo</button>
       <button class="btn" id="cd-copy-thumb" style="align-self:flex-end">📋 Thumbprint</button>
+      <button class="btn" id="cd-history" style="align-self:flex-end">📜 Histórico</button>
     </div>
   `, { large: true });
   $("#cd-copy-thumb").onclick = () => copyText(c.thumbprint_sha1 || "", "Thumbprint copiado!");
@@ -1112,6 +1157,36 @@ function certDetail(c, onDone) {
   $("#cd-save-lifecycle").onclick = async () => {
     await api(`/certs/${c.id}/lifecycle`, { method: "PUT", json: { lifecycle_status: $("#cd-lifecycle").value } });
     closeModal(); toast("Lifecycle atualizado"); onDone && onDone();
+  };
+  $("#cd-history").onclick = async () => {
+    try {
+      const h = await api(`/certs/${c.id}/history`);
+      closeModal();
+      modal(`Histórico — ${esc(c.cn)}`, `
+        <h3 style="margin:0 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Demandas vinculadas</h3>
+        ${h.reqs.length ? `<table class="tbl"><thead><tr><th>REQ</th><th>Tipo</th><th>Env</th><th>Status</th><th>Criada</th></tr></thead><tbody>
+          ${h.reqs.map(rr => `<tr>
+            <td class="mono">${esc(rr.req_number)}</td>
+            <td>${esc(DEMAND_TYPES[rr.demand_type] || rr.demand_type || '—')}</td>
+            <td>${envBadge(rr.env)}</td>
+            <td>${statusBadge(rr.status)}</td>
+            <td>${fmtDate(rr.created_at)}</td>
+          </tr>`).join('')}</tbody></table>` : '<div class="muted">Nenhuma demanda.</div>'}
+        <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Outros certificados com mesmo CN</h3>
+        ${h.related_certs.filter(rc => rc.id !== c.id).length ? `<table class="tbl"><thead><tr><th>Serial</th><th>Válido até</th><th>Lifecycle</th></tr></thead><tbody>
+          ${h.related_certs.filter(rc => rc.id !== c.id).map(rc => `<tr>
+            <td class="mono muted">${esc((rc.serial||'').slice(0,16))}…</td>
+            <td>${fmtDate(rc.not_after)}</td>
+            <td>${lifecycleBadge(rc.lifecycle_status)}</td>
+          </tr>`).join('')}</tbody></table>` : '<div class="muted">Nenhum outro certificado.</div>'}
+        <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Atividade</h3>
+        <ul class="timeline">${h.activity.map(a => `
+          <li><div>${esc(a.action.replaceAll('_',' '))} ${a.req_number ? `<span class="mono">· ${esc(a.req_number)}</span>` : ''}</div>
+            <div class="muted">${esc(a.detail)}</div>
+            <div class="t-when">${fmtDateTime(a.created_at)}</div></li>`).join('') || '<li class="muted">Sem atividade.</li>'}
+        </ul>
+      `, { large: true });
+    } catch (e) { toast(e.message, "err"); }
   };
 }
 

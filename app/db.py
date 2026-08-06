@@ -365,6 +365,7 @@ def init_db():
             "ALTER TABLE work_orders ADD COLUMN external_number TEXT DEFAULT ''",
             "ALTER TABLE install_locations ADD COLUMN status TEXT NOT NULL DEFAULT 'pendente'",
             "ALTER TABLE install_locations ADD COLUMN completed_at TEXT",
+            "ALTER TABLE reqs ADD COLUMN external_wo TEXT DEFAULT ''",
         ]:
             try:
                 conn.execute(col_sql)
