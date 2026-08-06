@@ -48,21 +48,54 @@ async function copyText(text, label = "Copiado!") {
 function modal(title, bodyHtml, { footer = "", large = false } = {}) {
   const root = $("#modal-root");
   root.innerHTML = `
-    <div class="modal-overlay">
+    <div class="modal-backdrop">
       <div class="modal ${large ? "modal-lg" : ""}">
-        <div class="modal-header"><h2>${esc(title)}</h2>
-          <button class="btn btn-ghost btn-sm" data-close>✕</button></div>
+        <div class="modal-header">
+          <div class="modal-title">${title}</div>
+          <button class="modal-close" data-close>&times;</button>
+        </div>
         <div class="modal-body">${bodyHtml}</div>
         ${footer ? `<div class="modal-footer">${footer}</div>` : ""}
       </div>
     </div>`;
-  const overlay = $(".modal-overlay", root);
-  overlay.addEventListener("click", e => {
-    if (e.target === overlay || e.target.closest("[data-close]")) closeModal();
-  });
-  return $(".modal", root);
 }
 function closeModal() { $("#modal-root").innerHTML = ""; }
+
+window.showSanModal = function(mainCn, sansString) {
+  const sans = (sansString || "")
+    .split(",")
+    .map(s => s.trim().replace(/^dns:/i, '').replace(/^ip:/i, ''))
+    .filter(Boolean);
+  const uniqueSans = Array.from(new Set(sans));
+  
+  modal(`🏷️ Subject Alternative Names (SANs) — ${esc(mainCn)}`, `
+    <div class="banner banner-info" style="margin-bottom:14px">
+      Este certificado foi emitido como <strong>Multi-Domínio / SAN</strong> e é válido para os <strong>${uniqueSans.length} nomes alternativos</strong> listados abaixo.
+      A busca no sistema por qualquer um destes nomes identificará este certificado.
+    </div>
+
+    <div class="field"><label>CN Principal (Common Name)</label>
+      <div style="display:flex;gap:6px">
+        <input class="input mono" value="${esc(mainCn)}" readonly>
+        <button class="btn btn-sm" onclick="copyText('${esc(mainCn)}', 'CN copiado!')">📋 Copiar</button>
+      </div>
+    </div>
+
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Nomes Alternativos (${uniqueSans.length})</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(240px, 1fr));gap:8px;max-height:300px;overflow-y:auto;padding:4px">
+      ${uniqueSans.map(san => `
+        <div class="badge" style="padding:8px 10px;font-family:var(--font-mono);font-size:12px;display:flex;align-items:center;justify-content:space-between;background:var(--bg-sunken);border:1px solid var(--border);border-radius:6px">
+          <span>🌐 <strong>${esc(san)}</strong></span>
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-sm btn-ghost" style="padding:1px 5px" title="Copiar este SAN" onclick="copyText('${esc(san)}', 'SAN copiado!')">📋</button>
+            <button class="btn btn-sm btn-ghost" style="padding:1px 5px" title="Filtrar por este SAN" onclick="closeModal(); location.hash='#/certs'; setTimeout(() => { const el=$('#cf-search'); if(el){ el.value='${esc(san)}'; el.oninput(); } }, 200)">🔍</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `, { large: true, footer: `<button class="btn" data-close>Fechar</button>` });
+};
+
 
 const ENVS = ["PRD", "TQS", "HMP", "DES"];
 const STATUSES = ["aberta", "csr_gerada", "cert_emitido", "instalado", "concluida", "cancelada"];
@@ -394,15 +427,17 @@ views.monitor = async () => {
     const ownershipFilter = $("#m-ownership").value;
     pendingOnly = $("#m-pending").checked;
     let rows = await api(`/monitor/expiring?days=${days}&pending_only=${pendingOnly}`);
-    if (search) rows = rows.filter(r => (r.cn||'').toLowerCase().includes(search) || (r.req_number||'').toLowerCase().includes(search));
+    if (search) rows = rows.filter(r => (r.cn||'').toLowerCase().includes(search) || (r.sans||'').toLowerCase().includes(search) || (r.req_number||'').toLowerCase().includes(search));
     if (ownershipFilter) rows = rows.filter(r => (r.ownership || 'interno') === ownershipFilter);
 
     $("#m-table").innerHTML = rows.length ? `
       <table class="tbl"><thead><tr>
         <th>CN</th><th>Env</th><th>Vencimento</th><th>Restam</th><th>Tipo</th><th>Lifecycle</th><th>Status</th><th>Ações</th>
       </tr></thead><tbody>
-      ${rows.map(r => `<tr${r.has_active_demand ? ' style="opacity:0.6"' : ''}>
-        <td>${esc(r.cn)}</td>
+      ${rows.map(r => {
+        const sanCount = (r.sans || "").split(",").map(s=>s.trim()).filter(Boolean).length;
+        return `<tr${r.has_active_demand ? ' style="opacity:0.6"' : ''}>
+        <td>${esc(r.cn)} ${sanCount ? `<button class="btn btn-sm btn-ghost" style="padding:1px 5px;font-size:10px;margin-left:4px" onclick="showSanModal('${esc(r.cn)}', '${esc(r.sans)}')">🏷️ SAN (${sanCount})</button>` : ''}</td>
         <td>${envBadge(r.env || '—')}</td>
         <td>${fmtDate(r.not_after)}</td>
         <td>${daysBadge(r.days_left)}</td>
@@ -416,7 +451,8 @@ views.monitor = async () => {
             : `<button class="btn btn-sm" data-recv="${r.id}" data-cn="${esc(r.cn)}" data-env="${esc(r.env||'PRD')}">📥 Recebimento</button>`
           }
         </td>
-      </tr>`).join('')}
+      </tr>`;
+      }).join('')}
       </tbody></table>`
     : `<div class="empty">🎉 Nenhum certificado pendente${pendingOnly ? ' (filtro ativo)' : ''}!</div>`;
 
@@ -1382,9 +1418,11 @@ views.certs = async () => {
     $("#cert-table").innerHTML = rows.length ? `
       <table class="tbl"><thead><tr>
         <th>CN</th><th>Tipo</th><th>REQ</th><th>Validade</th><th></th><th>Emissor</th><th>Lifecycle</th><th></th>
-      </tr></thead><tbody>${rows.map(c => `
+      </tr></thead><tbody>${rows.map(c => {
+        const sanList = (c.sans || "").split(",").map(s=>s.trim()).filter(Boolean);
+        return `
         <tr>
-          <td>${esc(c.cn)} ${c.issued_count ? `<span class="badge k-cat" title="Certificados emitidos por esta CA no repositório">emite ${c.issued_count}</span>` : ""}</td>
+          <td>${esc(c.cn)} ${sanList.length ? `<button class="btn btn-sm btn-ghost" style="padding:1px 5px;font-size:10px;margin-left:4px" onclick="showSanModal('${esc(c.cn)}', '${esc(c.sans)}')">🏷️ SAN (${sanList.length})</button>` : ''} ${c.issued_count ? `<span class="badge k-cat" title="Certificados emitidos por esta CA no repositório">emite ${c.issued_count}</span>` : ""}</td>
           <td>${certTypeBadge(c.cert_type)}</td>
           <td class="mono">${esc(c.req_number || "—")} ${c.env ? envBadge(c.env) : ""}</td>
           <td>${fmtDate(c.not_before)} → <strong>${fmtDate(c.not_after)}</strong></td>
@@ -1397,7 +1435,9 @@ views.certs = async () => {
             <button class="btn btn-sm" data-detail="${c.id}">Detalhes</button>
             <button class="btn btn-sm btn-danger" data-del="${c.id}">✕</button>
           </td>
-        </tr>`).join("")}</tbody></table>`
+        </tr>`;
+      }).join("")}</tbody></table>`
+
       : `<div class="empty">Nenhum certificado encontrado.</div>`;
     $$("[data-detail]").forEach(el => el.onclick = () =>
       certDetail(rows.find(c => c.id === +el.dataset.detail), load));
@@ -1421,10 +1461,14 @@ views.certs = async () => {
 
 function certDetail(c, onDone) {
   if (!c) return;
+  const sanList = (c.sans || "").split(",").map(s=>s.trim()).filter(Boolean);
   const row = (k, v, mono) => `<tr><th style="width:140px">${k}</th><td class="${mono ? "mono" : ""}">${esc(v || "—")}</td></tr>`;
   modal("Detalhes do certificado", `
     <table class="tbl">
-      ${row("CN", c.cn)}${row("SANs", c.sans)}${row("Subject", c.subject, 1)}
+      ${row("CN", c.cn)}
+      <tr><th>SANs</th><td>${c.sans ? `${esc(c.sans)} <button class="btn btn-sm btn-ghost" style="padding:1px 5px;font-size:11px;margin-left:6px" onclick="showSanModal('${esc(c.cn)}', '${esc(c.sans)}')">🏷️ Ver todos (${sanList.length})</button>` : '<span class="muted">—</span>'}</td></tr>
+      ${row("Subject", c.subject, 1)}
+
       ${row("Emissor", c.issuer, 1)}
       <tr><th>Cadeia</th><td>${c.parent_cn
         ? `🔗 emitido por <strong>${esc(c.parent_cn)}</strong> (no repositório)`
