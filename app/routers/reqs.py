@@ -184,12 +184,54 @@ def get_req(req_id: int):
 
         req["activity"] = [dict(r) for r in conn.execute(
             "SELECT * FROM activity_log WHERE req_id=? ORDER BY id DESC LIMIT 50", (req_id,))]
+        req["past_reqs"] = [dict(r) for r in conn.execute(
+            "SELECT id, req_number, demand_type, env, status, created_at, external_partner, partner_email, partner_registration FROM reqs WHERE cn=? AND id!=? ORDER BY id DESC LIMIT 10",
+            (req["cn"], req_id)
+        ).fetchall()]
         base = get_setting(conn, "base_dir")
         template = get_setting(conn, "folder_template")
         folder = folders.req_folder(base, template, req["req_number"], req["cn"], req["env"])
         req["folder"] = str(folder)
         req["folder_exists"] = folder.exists()
         return req
+
+
+@router.get("/reqs/history-by-cn")
+def get_cn_history(cn: str):
+    """Retorna histórico de demandas anteriores e dados preenchidos para um CN."""
+    if not cn or not cn.strip():
+        return {"reqs": [], "latest": None, "locations": []}
+    with db_conn() as conn:
+        clean_cn = cn.strip()
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM reqs WHERE cn=? ORDER BY id DESC LIMIT 20", (clean_cn,)
+        ).fetchall()]
+        
+        latest = None
+        for r in rows:
+            if r.get("external_partner") or r.get("partner_email") or r.get("partner_registration"):
+                latest = {
+                    "external_partner": r.get("external_partner", ""),
+                    "partner_email": r.get("partner_email", ""),
+                    "partner_registration": r.get("partner_registration", ""),
+                    "notes": r.get("notes", "")
+                }
+                break
+        
+        locations = [dict(r) for r in conn.execute("""
+            SELECT DISTINCT l.server, l.path_or_store, l.location_type, l.notes
+            FROM install_locations l
+            JOIN reqs r ON r.id = l.req_id
+            WHERE r.cn=?
+            ORDER BY l.id DESC
+        """, (clean_cn,)).fetchall()]
+        
+        return {
+            "reqs": rows,
+            "latest": latest,
+            "locations": locations
+        }
+
 
 
 @router.put("/reqs/{req_id}")

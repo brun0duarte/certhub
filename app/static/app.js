@@ -561,10 +561,21 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
         <select class="input" id="nd-type">
           <option value="geracao" ${defaultType==='geracao'?'selected':''}>Geração</option>
           <option value="recebimento" ${defaultType==='recebimento'?'selected':''}>Recebimento</option>
+          <option value="renovacao" ${defaultType==='renovacao'?'selected':''}>Renovação</option>
           <option value="revogacao" ${defaultType==='revogacao'?'selected':''}>Revogação</option>
         </select></div>
       <div class="field"><label>CN (Common Name)</label>
-        <input class="input" id="nd-cn" placeholder="www.exemplo.com.br" value="${esc(opts.cn||'')}"></div>
+        <input class="input" id="nd-cn" placeholder="www.exemplo.com.br" value="${esc(opts.cn||'')}">
+        <div id="nd-cn-notice" style="display:none;font-size:11px;color:var(--green);margin-top:3px"></div>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Parceiro Externo / Solicitante</label>
+        <input class="input" id="nd-partner" placeholder="Ex: Empresa Parceira, Gateway X" value="${esc(opts.external_partner||'')}"></div>
+      <div class="field"><label>E-mail do Parceiro</label>
+        <input class="input" id="nd-partner-email" placeholder="parceiro@empresa.com" value="${esc(opts.partner_email||'')}"></div>
+      <div class="field"><label>Matrícula / ID</label>
+        <input class="input mono" id="nd-partner-reg" placeholder="MAT-12345" value="${esc(opts.partner_registration||'')}"></div>
     </div>
     <div class="form-row">
       <div class="field" id="nd-ticket-container">
@@ -587,6 +598,27 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
   };
   $("#nd-env").onchange = updateTicketField;
 
+  const lookupCNHistory = async () => {
+    const cnVal = $("#nd-cn").value.trim();
+    if (!cnVal) return;
+    try {
+      const data = await api(`/reqs/history-by-cn?cn=${encodeURIComponent(cnVal)}`);
+      if (data.latest) {
+        if (!$("#nd-partner").value && data.latest.external_partner) $("#nd-partner").value = data.latest.external_partner;
+        if (!$("#nd-partner-email").value && data.latest.partner_email) $("#nd-partner-email").value = data.latest.partner_email;
+        if (!$("#nd-partner-reg").value && data.latest.partner_registration) $("#nd-partner-reg").value = data.latest.partner_registration;
+        if (!$("#nd-notes").value && data.latest.notes) $("#nd-notes").value = data.latest.notes;
+        $("#nd-cn-notice").innerHTML = `✨ ${data.reqs.length} demanda(s) anterior(es) encontrada(s) — dados preenchidos automaticamente!`;
+        $("#nd-cn-notice").style.display = "";
+      } else if (data.reqs.length > 0) {
+        $("#nd-cn-notice").innerHTML = `ℹ️ ${data.reqs.length} demanda(s) anterior(es) encontrada(s) para este CN.`;
+        $("#nd-cn-notice").style.display = "";
+      }
+    } catch (e) {}
+  };
+  $("#nd-cn").onchange = lookupCNHistory;
+  if (opts.cn) lookupCNHistory();
+
   $("#nd-save").onclick = async () => {
     try {
       const env = $("#nd-env").value;
@@ -601,6 +633,9 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
         auto_password: $("#nd-auto").checked,
         external_crq: isPrdEnv ? ticketVal : '',
         external_wo: !isPrdEnv ? ticketVal : '',
+        external_partner: $("#nd-partner").value,
+        partner_email: $("#nd-partner-email").value,
+        partner_registration: $("#nd-partner-reg").value,
       }});
       // If created from monitor, flag the cert as em_renovacao
       if (opts.certId) {
@@ -616,6 +651,7 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
       onDone && onDone();
     } catch (e) { toast(e.message, "err"); }
   };
+
 }
 
 
@@ -828,7 +864,27 @@ async function openReq(id, onDone) {
     `}
 
 
-    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Histórico</h3>
+    ${(r.past_reqs && r.past_reqs.length) ? `
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Demandas Anteriores deste Certificado (${esc(r.cn)})</h3>
+    <table class="tbl mb">
+      <thead>
+        <tr><th>REQ</th><th>Tipo</th><th>Ambiente</th><th>Status</th><th>Criada em</th><th>Ação</th></tr>
+      </thead>
+      <tbody>
+        ${r.past_reqs.map(p => `
+          <tr>
+            <td class="mono"><strong>${esc(p.req_number)}</strong></td>
+            <td>${demandBadge(p.demand_type)}</td>
+            <td>${envBadge(p.env)}</td>
+            <td>${statusBadge(p.status)}</td>
+            <td>${fmtDate(p.created_at)}</td>
+            <td><button class="btn btn-sm" data-open-past="${p.id}">Abrir ↗</button></td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>` : ''}
+
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Histórico de Atividades</h3>
     <ul class="timeline">${r.activity.map(a => `
       <li><div>${esc(a.action.replaceAll("_", " "))}</div>
         <div class="muted">${esc(a.detail)}</div>
@@ -837,6 +893,12 @@ async function openReq(id, onDone) {
       <button class="btn btn-danger" id="d-delete">Excluir demanda</button>
       <button class="btn" id="d-gocsr">📝 Gerar CSR</button>
       <button class="btn btn-primary" id="d-save">Salvar</button>` });
+
+  $$("[data-open-past]").forEach(btn => btn.onclick = () => {
+    closeModal();
+    openReq(+btn.dataset.openPast, onDone);
+  });
+
 
   $("#d-tpl").onchange = () => {
     const tpl = tpls.find(t => t.id === +$("#d-tpl").value);
