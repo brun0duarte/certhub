@@ -16,6 +16,7 @@ class CertUpdate(BaseModel):
     req_id: int | None = None
     cert_type: str | None = None
     lifecycle_status: str | None = None
+    ownership: str | None = None
 
 
 def _issuer_cn_from_dn(dn: str) -> str:
@@ -174,6 +175,8 @@ def update_cert(cert_id: int, body: CertUpdate):
         raise HTTPException(400, f"Tipo inválido. Use: {', '.join(CERT_TYPES)} ou vazio")
     if "lifecycle_status" in fields and fields["lifecycle_status"] not in LIFECYCLE_STATUSES:
         raise HTTPException(400, f"Status inválido. Use: {LIFECYCLE_STATUSES}")
+    if "ownership" in fields and fields["ownership"] not in ['interno', 'externo', '']:
+        raise HTTPException(400, "ownership inválido. Use: interno, externo")
         
     conn = get_db()
     if not conn.execute("SELECT id FROM certificates WHERE id=?", (cert_id,)).fetchone():
@@ -223,3 +226,52 @@ def delete_cert(cert_id: int):
     conn.commit()
     conn.close()
     return {"ok": True}
+
+@router.get("/certs/{cert_id}/history")
+def get_cert_history(cert_id: int):
+    """Retorna histórico completo de um certificado."""
+    conn = get_db()
+    cert = conn.execute("SELECT * FROM certificates WHERE id=?", (cert_id,)).fetchone()
+    if not cert:
+        conn.close()
+        raise HTTPException(404, "Certificado não encontrado")
+    cert = dict(cert)
+    cn = cert['cn']
+    
+    reqs = [dict(r) for r in conn.execute(
+        "SELECT * FROM reqs WHERE cn=? ORDER BY created_at DESC", (cn,)
+    ).fetchall()]
+    
+    req_ids = [r['id'] for r in reqs]
+    locations = []
+    if req_ids:
+        placeholders = ','.join('?' * len(req_ids))
+        locations = [dict(l) for l in conn.execute(
+            f"SELECT il.*, r.req_number FROM install_locations il "
+            f"LEFT JOIN reqs r ON r.id = il.req_id "
+            f"WHERE il.req_id IN ({placeholders}) ORDER BY il.id",
+            req_ids
+        ).fetchall()]
+    
+    activity = [dict(a) for a in conn.execute(
+        "SELECT al.*, r.req_number FROM activity_log al "
+        "LEFT JOIN reqs r ON r.id = al.req_id "
+        "WHERE al.req_id IN (SELECT id FROM reqs WHERE cn=?) "
+        "ORDER BY al.created_at DESC LIMIT 50",
+        (cn,)
+    ).fetchall()]
+    
+    related_certs = [dict(c) for c in conn.execute(
+        "SELECT id, cn, not_before, not_after, serial, thumbprint_sha1, lifecycle_status, source "
+        "FROM certificates WHERE cn=? ORDER BY not_after DESC",
+        (cn,)
+    ).fetchall()]
+    
+    conn.close()
+    return {
+        "certificate": cert,
+        "reqs": reqs,
+        "locations": locations,
+        "activity": activity,
+        "related_certs": related_certs,
+    }
