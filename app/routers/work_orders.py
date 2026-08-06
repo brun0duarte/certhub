@@ -19,6 +19,7 @@ class WorkOrderIn(BaseModel):
     status: str = 'aberta'
     scheduled_at: str | None = None
     assigned_to: int | None = None
+    external_number: str = ''
 
 class WorkOrderUpdate(BaseModel):
     wo_number: str | None = None
@@ -29,12 +30,14 @@ class WorkOrderUpdate(BaseModel):
     scheduled_at: str | None = None
     completed_at: str | None = None
     assigned_to: int | None = None
+    external_number: str | None = None
 
 @router.get("/work-orders")
 def list_work_orders(req_id: int | None = None, status: str = "", wo_type: str = ""):
     conn = get_db()
     sql = """
-        SELECT w.*, r.req_number, r.cn, r.env, u.display_name
+        SELECT w.*, r.req_number, r.cn, r.env, u.display_name,
+               (SELECT COUNT(*) FROM wo_tasks WHERE wo_id=w.id) as task_count, (SELECT COUNT(*) FROM wo_tasks WHERE wo_id=w.id AND status='concluida') as tasks_done
         FROM work_orders w
         LEFT JOIN reqs r ON r.id = w.parent_req_id
         LEFT JOIN users u ON u.id = w.assigned_to
@@ -69,15 +72,28 @@ def create_work_order(body: WorkOrderIn):
     try:
         cur = conn.execute(
             """INSERT INTO work_orders
-               (wo_number, wo_type, req_id, parent_req_id, title, description, status, scheduled_at, assigned_to)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (wo_number, body.wo_type, body.req_id, body.parent_req_id, body.title, body.description, body.status, body.scheduled_at, body.assigned_to)
+               (wo_number, wo_type, req_id, parent_req_id, title, description, status, scheduled_at, assigned_to, external_number)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (wo_number, body.wo_type, body.req_id, body.parent_req_id, body.title, body.description, body.status, body.scheduled_at, body.assigned_to, body.external_number)
         )
     except Exception as e:
         conn.close()
         raise HTTPException(409, f"Já existe uma Work Order com número {wo_number}.")
     
     wo_id = cur.lastrowid
+    
+    DEFAULT_TASKS = [
+        ('preparo', 'Preparação da instalação'),
+        ('ativacao', 'Ativação / execução da mudança'),
+        ('validacao', 'Validação pós-instalação'),
+        ('retorno', 'Plano de retorno (rollback)'),
+    ]
+    for task_type, title in DEFAULT_TASKS:
+        conn.execute(
+            "INSERT INTO wo_tasks (wo_id, task_type, title) VALUES (?,?,?)",
+            (wo_id, task_type, title)
+        )
+        
     conn.commit()
     row = dict(conn.execute("SELECT * FROM work_orders WHERE id=?", (wo_id,)).fetchone())
     conn.close()
@@ -91,6 +107,9 @@ def get_work_order(wo_id: int):
         conn.close()
         raise HTTPException(404, "Work Order não encontrada")
     wo = dict(row)
+    wo['tasks'] = [dict(t) for t in conn.execute(
+        "SELECT * FROM wo_tasks WHERE wo_id=? ORDER BY id", (wo_id,)
+    ).fetchall()]
     conn.close()
     return wo
 
@@ -189,3 +208,62 @@ def create_installation_wo(req_id: int):
     wo["is_prd"] = is_prd
     conn.close()
     return wo
+
+class WOTaskIn(BaseModel):
+    task_type: str = 'custom'
+    title: str = ''
+    notes: str = ''
+
+class WOTaskUpdate(BaseModel):
+    title: str | None = None
+    notes: str | None = None
+    status: str | None = None
+
+@router.post("/work-orders/{wo_id}/tasks")
+def create_wo_task(wo_id: int, body: WOTaskIn):
+    conn = get_db()
+    wo = conn.execute("SELECT id FROM work_orders WHERE id=?", (wo_id,)).fetchone()
+    if not wo:
+        conn.close()
+        raise HTTPException(404, "Work Order não encontrada")
+    cur = conn.execute(
+        "INSERT INTO wo_tasks (wo_id, task_type, title, notes) VALUES (?,?,?,?)",
+        (wo_id, body.task_type, body.title, body.notes)
+    )
+    conn.commit()
+    task = dict(conn.execute("SELECT * FROM wo_tasks WHERE id=?", (cur.lastrowid,)).fetchone())
+    conn.close()
+    return task
+
+@router.put("/work-orders/tasks/{task_id}")
+def update_wo_task(task_id: int, body: WOTaskUpdate):
+    conn = get_db()
+    task = conn.execute("SELECT * FROM wo_tasks WHERE id=?", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        raise HTTPException(404, "Tarefa não encontrada")
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if 'status' in fields and fields['status'] not in ('pendente', 'concluida', 'cancelada'):
+        conn.close()
+        raise HTTPException(400, "Status inválido")
+    if 'status' in fields and fields['status'] == 'concluida':
+        fields['completed_at'] = conn.execute("SELECT datetime('now','localtime')").fetchone()[0]
+    if fields:
+        sets = ', '.join(f"{k}=?" for k in fields)
+        conn.execute(f"UPDATE wo_tasks SET {sets} WHERE id=?", (*fields.values(), task_id))
+        conn.commit()
+    updated = dict(conn.execute("SELECT * FROM wo_tasks WHERE id=?", (task_id,)).fetchone())
+    conn.close()
+    return updated
+
+@router.delete("/work-orders/tasks/{task_id}")
+def delete_wo_task(task_id: int):
+    conn = get_db()
+    task = conn.execute("SELECT * FROM wo_tasks WHERE id=?", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        raise HTTPException(404, "Tarefa não encontrada")
+    conn.execute("DELETE FROM wo_tasks WHERE id=?", (task_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
