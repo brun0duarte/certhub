@@ -828,11 +828,21 @@ async function openReq(id, onDone) {
     </div>
     <button class="btn btn-sm" id="l-add">＋ Adicionar local</button>
 
-    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Certificados vinculados</h3>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 8px">
+      <h3 style="margin:0;font-size:13px;color:var(--text-dim);text-transform:uppercase">Certificado Emitido</h3>
+      <button class="btn btn-sm btn-primary" id="d-import-cert">📥 Importar Certificado (.cer / .pfx)</button>
+    </div>
     ${r.certificates.length ? `<table class="tbl"><tbody>${r.certificates.map(c => `
-      <tr><td>${esc(c.cn)}</td><td>${fmtDate(c.not_after)}</td>
-      <td class="mono muted">${esc((c.thumbprint_sha1 || "").slice(0, 16))}…</td></tr>`).join("")}</tbody></table>`
-      : `<div class="muted">Nenhum certificado importado ainda.</div>`}
+      <tr>
+        <td><strong>${esc(c.cn)}</strong></td>
+        <td><span class="badge badge-lc-${esc(c.lifecycle_status || 'em_inventario')}">${esc(LIFECYCLE_STATUS[c.lifecycle_status] || c.lifecycle_status || 'em_inventario')}</span></td>
+        <td>Vence ${fmtDate(c.not_after)}</td>
+        <td class="mono muted">${esc((c.thumbprint_sha1 || "").slice(0, 16))}…</td>
+      </tr>`).join("")}</tbody></table>`
+      : `<div class="panel mt" style="background:var(--bg-sunken);padding:8px 12px;border-left:3px solid var(--amber);font-size:12px">
+          ⚠️ <strong>Certificado Pendente:</strong> É necessário importar o certificado emitido antes de concluir esta demanda.
+         </div>`}
+
 
     ${r.env === 'PRD' ? `
       ${(r.certificates.length > 0 || ['cert_emitido','instalado','concluida'].includes(r.status) || r.external_crq || isInstall) ? `
@@ -894,10 +904,68 @@ async function openReq(id, onDone) {
       <button class="btn" id="d-gocsr">📝 Gerar CSR</button>
       <button class="btn btn-primary" id="d-save">Salvar</button>` });
 
+  if ($("#d-import-cert")) {
+    $("#d-import-cert").onclick = () => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".cer,.crt,.pem,.pfx,.p12";
+      input.onchange = async () => {
+        const file = input.files[0];
+        if (!file) return;
+        let pwd = "";
+        if (file.name.endsWith(".pfx") || file.name.endsWith(".p12")) {
+          pwd = prompt("Senha do arquivo PFX (se houver):", r.password || "") || "";
+        }
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("password", pwd);
+        fd.append("req_id", id);
+        try {
+          const res = await api("/certs/import", { method: "POST", body: fd });
+          if (!res.chain_found) {
+            modal("⚠️ Cadeia de Certificação não encontrada", `
+              <div class="banner banner-warn" style="margin-bottom:12px">
+                A cadeia de certificação (CA) do emissor <strong>"${esc(res.issuer_name)}"</strong> não foi previamente cadastrada no banco de dados do sistema.
+              </div>
+              <p style="margin:12px 0;font-size:13px">Para garantir a validação completa da cadeia no momento da instalação, você pode importar o certificado da CA Emissora (Raiz ou Intermediária) agora.</p>
+            `, { footer: `
+              <button class="btn" id="ca-skip">Continuar sem CA</button>
+              <button class="btn btn-primary" id="ca-import">📥 Importar CA Emissora</button>
+            `});
+            $("#ca-skip").onclick = () => { closeModal(); openReq(id, onDone); };
+            $("#ca-import").onclick = () => {
+              closeModal();
+              const caInput = document.createElement("input");
+              caInput.type = "file";
+              caInput.accept = ".cer,.crt,.pem";
+              caInput.onchange = async () => {
+                const caFile = caInput.files[0];
+                if (!caFile) return;
+                const caFd = new FormData();
+                caFd.append("file", caFile);
+                try {
+                  await api("/certs/import", { method: "POST", body: caFd });
+                  toast("✅ Certificado da CA Emissora importado com sucesso!");
+                  openReq(id, onDone);
+                } catch (err) { toast(err.message, "err"); }
+              };
+              caInput.click();
+            };
+          } else {
+            toast("✅ Certificado importado e vinculado à CA emissora (" + res.issuer_name + ")");
+            closeModal(); openReq(id, onDone);
+          }
+        } catch (e) { toast(e.message, "err"); }
+      };
+      input.click();
+    };
+  }
+
   $$("[data-open-past]").forEach(btn => btn.onclick = () => {
     closeModal();
     openReq(+btn.dataset.openPast, onDone);
   });
+
 
 
   $("#d-tpl").onchange = () => {

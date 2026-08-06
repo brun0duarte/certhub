@@ -144,6 +144,18 @@ async def import_cert(file: UploadFile = File(...), password: str = Form(""),
         if has_install:
             lifecycle = 'instalado'
 
+    # Verifica se a cadeia do emissor (CA) já está cadastrada no sistema
+    issuer_dn = info.get("issuer", "")
+    issuer_cn = info.get("issuer_cn", "")
+    ca_row = conn.execute("""
+        SELECT id, cn, issuer_cn, cert_type, thumbprint_sha1 FROM certificates
+        WHERE (subject=? OR cn=? OR (issuer_cn=? AND issuer_cn != ''))
+          AND (cert_type='ca' OR cert_category LIKE '%ac%' OR cert_category LIKE '%ca%')
+        ORDER BY id DESC LIMIT 1
+    """, (issuer_dn, issuer_cn, issuer_cn)).fetchone()
+
+    chain_found = ca_row is not None
+
     cur = conn.execute(
         """INSERT INTO certificates
            (req_id, cn, sans, subject, issuer, issuer_cn, cert_type, serial,
@@ -164,8 +176,12 @@ async def import_cert(file: UploadFile = File(...), password: str = Form(""),
                      (req_id,))
     conn.commit()
     row = dict(conn.execute("SELECT * FROM certificates WHERE id=?", (cert_id,)).fetchone())
+    row["chain_found"] = chain_found
+    row["issuer_name"] = issuer_cn or issuer_dn or "Desconhecido"
+    row["chain_ca"] = dict(ca_row) if ca_row else None
     conn.close()
     return row
+
 
 
 @router.put("/certs/{cert_id}")

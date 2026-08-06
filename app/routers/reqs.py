@@ -243,6 +243,13 @@ def update_req(req_id: int, body: ReqUpdate):
         fields = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
         if "status" in fields and fields["status"] not in REQ_STATUSES:
             raise HTTPException(400, f"Status inválido. Use: {', '.join(REQ_STATUSES)}")
+        if "status" in fields and fields["status"] == "concluida":
+            demand_type = row["demand_type"] if "demand_type" in row.keys() else "geracao"
+            if demand_type in ("geracao", "recebimento", "renovacao"):
+                cert_count = conn.execute("SELECT COUNT(*) FROM certificates WHERE req_id=?", (req_id,)).fetchone()[0]
+                if cert_count == 0:
+                    raise HTTPException(400, "🔒 Não é possível concluir esta demanda sem antes importar e vincular o certificado emitido.")
+
         if fields:
             sets = ", ".join(f"{k}=?" for k in fields)
             conn.execute(
