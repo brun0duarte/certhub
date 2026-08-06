@@ -278,7 +278,8 @@ def import_previous_locations(req_id: int):
             ).fetchall()
         }
 
-        for loc in prev_locs:
+        for loc_row in prev_locs:
+            loc = dict(loc_row)
             key = (loc['server'], loc.get('path_or_store', ''))
             if key not in existing_servers:
                 conn.execute("""
@@ -287,6 +288,7 @@ def import_previous_locations(req_id: int):
                 """, (req_id, loc['server'], loc.get('path_or_store', ''), loc.get('location_type', 'outro'), loc.get('notes', '')))
                 existing_servers.add(key)
                 added += 1
+
 
         log_activity(conn, "locais_importados", f"Importados {added} locais de instalação de demandas anteriores do CN {current['cn']}", req_id)
         conn.commit()

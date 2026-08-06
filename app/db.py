@@ -223,9 +223,9 @@ CREATE TABLE work_orders (
 LIFECYCLE_STATUSES = ['pedido', 'instalado', 'em_inventario', 'reservado', 'excluir', 'fim_de_vida', 'em_renovacao']
 
 SCHEMA_V8 = """
-ALTER TABLE certificates ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'em_inventario'
-    CHECK (lifecycle_status IN ('pedido','instalado','em_inventario','reservado','excluir','fim_de_vida'));
+ALTER TABLE certificates ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'em_inventario';
 """
+
 
 SCHEMA_V9 = """
 ALTER TABLE certificates ADD COLUMN ownership TEXT NOT NULL DEFAULT 'interno';
@@ -395,7 +395,61 @@ def init_db():
     if version > 0:
         conn.execute(f"PRAGMA user_version = {version}")
         conn.commit()
+
+    # Revisa e remove CHECK constraints legados na tabela certificates
+    _fix_certificates_check_constraint(conn)
     conn.close()
+
+
+def _fix_certificates_check_constraint(conn):
+    """Remove o CHECK constraint restritivo da coluna lifecycle_status se existir."""
+    try:
+        conn.execute("SAVEPOINT check_test")
+        row = conn.execute("SELECT id, lifecycle_status FROM certificates LIMIT 1").fetchone()
+        if row:
+            conn.execute("UPDATE certificates SET lifecycle_status = 'em_renovacao' WHERE id = ?", (row['id'],))
+            conn.execute("UPDATE certificates SET lifecycle_status = ? WHERE id = ?", (row['lifecycle_status'], row['id']))
+        conn.execute("RELEASE SAVEPOINT check_test")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK TO SAVEPOINT check_test")
+        except Exception:
+            pass
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(certificates)").fetchall()]
+        col_list = ", ".join(cols)
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("CREATE TABLE certificates_temp AS SELECT * FROM certificates")
+        conn.execute("DROP TABLE certificates")
+        conn.execute("""
+            CREATE TABLE certificates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                req_id INTEGER REFERENCES reqs(id) ON DELETE SET NULL,
+                cn TEXT,
+                sans TEXT DEFAULT '',
+                subject TEXT,
+                issuer TEXT,
+                serial TEXT,
+                thumbprint_sha1 TEXT,
+                not_before TEXT,
+                not_after TEXT,
+                key_type TEXT,
+                source TEXT NOT NULL DEFAULT 'importado',
+                file_path TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                cert_type TEXT NOT NULL DEFAULT '',
+                issuer_cn TEXT NOT NULL DEFAULT '',
+                parent_id INTEGER REFERENCES certificates(id),
+                cert_category TEXT NOT NULL DEFAULT '',
+                lifecycle_status TEXT NOT NULL DEFAULT 'em_inventario',
+                ownership TEXT NOT NULL DEFAULT 'interno',
+                external_partner TEXT DEFAULT ''
+            );
+        """)
+        conn.execute(f"INSERT INTO certificates ({col_list}) SELECT {col_list} FROM certificates_temp")
+        conn.execute("DROP TABLE certificates_temp")
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.commit()
+
 
 
 
