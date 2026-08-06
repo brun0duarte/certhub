@@ -71,7 +71,10 @@ const STATUS_LABEL = {
   instalado: "Instalado", concluida: "Concluída", cancelada: "Cancelada",
 };
 const DEMAND_TYPES = {
-  emissao: "Emissão", renovacao: "Renovação", revogacao: "Revogação",
+  geracao: "Geração", recebimento: "Recebimento", revogacao: "Revogação",
+  instalacao: "Instalação",
+  // Legacy types for backwards compat
+  emissao: "Emissão", renovacao: "Renovação",
   usuario: "Cert. Usuário", instalacao_existente: "Instalação Existente", outro: "Outro",
 };
 const CERT_CATEGORIES = {
@@ -93,7 +96,10 @@ const LIFECYCLE_STATUS = {
   reservado: 'Reservado',
   excluir: 'Excluir',
   fim_de_vida: 'Fim de Vida',
+  em_renovacao: 'Em Renovação',
 };
+const OWNERSHIP_LABEL = { interno: 'Interno', externo: 'Externo / Parceiro' };
+const ownershipBadge = o => `<span class="badge badge-lc-${esc(o)}">${esc(OWNERSHIP_LABEL[o] || o)}</span>`;
 const envBadge = e => `<span class="badge badge-${esc(e)}">${esc(e)}</span>`;
 const statusBadge = s => `<span class="badge badge-${esc(s)}">${esc(STATUS_LABEL[s] || s)}</span>`;
 const demandBadge = d => `<span class="badge badge-demand-${esc(d)}">${esc(DEMAND_TYPES[d] || d)}</span>`;
@@ -332,82 +338,237 @@ function taskModal(t, onDone) {
   };
 }
 
-/* ---------------- Demandas ---------------- */
-views.reqs = async () => {
+/* ---------------- Monitor de Vencimentos ---------------- */
+views.monitor = async () => {
+  let pendingOnly = false;
   main.innerHTML = `
     <div class="view-header"><div>
-      <div class="view-title">Demandas (REQ)</div>
-      <div class="view-sub">Registro e acompanhamento das requisições de certificado</div>
-    </div>
-    <button class="btn btn-primary" id="new-req">＋ Nova demanda</button></div>
+      <div class="view-title">📡 Monitor de Vencimentos</div>
+      <div class="view-sub">Certificados próximos ao vencimento e vencidos — inicie demandas a partir daqui</div>
+    </div></div>
     <div class="panel">
       <div class="toolbar" style="margin-bottom:12px">
-        <input class="input" id="f-search" placeholder="Buscar REQ, CN, notas…" style="min-width:220px">
-        <select class="input" id="f-env"><option value="">Ambiente</option>${ENVS.map(e => `<option>${e}</option>`).join("")}</select>
-        <select class="input" id="f-status"><option value="">Status</option>${STATUSES.map(s => `<option value="${s}">${STATUS_LABEL[s]}</option>`).join("")}</select>
+        <input class="input" id="m-search" placeholder="Buscar CN, REQ…" style="min-width:220px">
+        <select class="input" id="m-days">
+          <option value="30">Vencem em 30 dias</option>
+          <option value="60">Vencem em 60 dias</option>
+          <option value="90" selected>Vencem em 90 dias</option>
+          <option value="180">Vencem em 180 dias</option>
+          <option value="365">Vencem em 1 ano</option>
+        </select>
+        <select class="input" id="m-ownership">
+          <option value="">Todos</option>
+          <option value="interno">Interno</option>
+          <option value="externo">Externo</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap">
+          <input type="checkbox" id="m-pending"> Somente pendentes
+        </label>
       </div>
-      <div id="req-table"></div>
+      <div id="m-table"></div>
     </div>`;
 
   async function load() {
+    const days = $("#m-days").value;
+    const search = $("#m-search").value.toLowerCase();
+    const ownershipFilter = $("#m-ownership").value;
+    pendingOnly = $("#m-pending").checked;
+    let rows = await api(`/monitor/expiring?days=${days}&pending_only=${pendingOnly}`);
+    if (search) rows = rows.filter(r => (r.cn||'').toLowerCase().includes(search) || (r.req_number||'').toLowerCase().includes(search));
+    if (ownershipFilter) rows = rows.filter(r => (r.ownership || 'interno') === ownershipFilter);
+
+    $("#m-table").innerHTML = rows.length ? `
+      <table class="tbl"><thead><tr>
+        <th>CN</th><th>Env</th><th>Vencimento</th><th>Restam</th><th>Tipo</th><th>Lifecycle</th><th>Status</th><th>Ações</th>
+      </tr></thead><tbody>
+      ${rows.map(r => `<tr${r.has_active_demand ? ' style="opacity:0.6"' : ''}>
+        <td>${esc(r.cn)}</td>
+        <td>${envBadge(r.env || '—')}</td>
+        <td>${fmtDate(r.not_after)}</td>
+        <td>${daysBadge(r.days_left)}</td>
+        <td>${ownershipBadge(r.ownership || 'interno')}</td>
+        <td>${lifecycleBadge(r.lifecycle_status)}</td>
+        <td>${r.has_active_demand ? '<span class="badge badge-lc-em_renovacao">🔄 Em andamento</span>' : '<span class="badge badge-days-ok">Aguardando</span>'}</td>
+        <td style="white-space:nowrap">
+          ${r.has_active_demand ? '<span class="muted">Demanda ativa</span>' :
+            (r.ownership || 'interno') === 'interno'
+            ? `<button class="btn btn-sm btn-primary" data-gen="${r.id}" data-cn="${esc(r.cn)}" data-env="${esc(r.env||'PRD')}">📋 Geração</button>`
+            : `<button class="btn btn-sm" data-recv="${r.id}" data-cn="${esc(r.cn)}" data-env="${esc(r.env||'PRD')}">📥 Recebimento</button>`
+          }
+        </td>
+      </tr>`).join('')}
+      </tbody></table>`
+    : `<div class="empty">🎉 Nenhum certificado pendente${pendingOnly ? ' (filtro ativo)' : ''}!</div>`;
+
+    $$("[data-gen]").forEach(el => el.onclick = () => {
+      const cn = el.dataset.cn, env = el.dataset.env, certId = el.dataset.gen;
+      newDemandModal('geracao', { cn, env, certId }, load);
+    });
+    $$("[data-recv]").forEach(el => el.onclick = () => {
+      const cn = el.dataset.cn, env = el.dataset.env, certId = el.dataset.recv;
+      newDemandModal('recebimento', { cn, env, certId }, load);
+    });
+  }
+
+  $("#m-search").oninput = () => { clearTimeout(window._mt); window._mt = setTimeout(load, 300); };
+  $("#m-days").onchange = $("#m-ownership").onchange = $("#m-pending").onchange = load;
+  await load();
+};
+
+/* ---------------- Demandas de Geração / Recebimento ---------------- */
+views.geracao = async () => {
+  main.innerHTML = `
+    <div class="view-header"><div>
+      <div class="view-title">📋 Demandas de Geração</div>
+      <div class="view-sub">REQs de geração e recebimento de certificados em andamento</div>
+    </div>
+    <button class="btn btn-primary" id="g-new">＋ Nova demanda</button></div>
+    <div class="panel">
+      <div class="toolbar" style="margin-bottom:12px">
+        <input class="input" id="g-search" placeholder="Buscar REQ, CN…" style="min-width:220px">
+        <select class="input" id="g-env"><option value="">Ambiente</option>${ENVS.map(e => `<option>${e}</option>`).join('')}</select>
+        <select class="input" id="g-status"><option value="">Status</option>${STATUSES.map(s => `<option value="${s}">${STATUS_LABEL[s]}</option>`).join('')}</select>
+        <select class="input" id="g-type">
+          <option value="geracao,recebimento">Todos</option>
+          <option value="geracao">Geração</option>
+          <option value="recebimento">Recebimento</option>
+        </select>
+      </div>
+      <div id="g-table"></div>
+    </div>`;
+
+  async function load() {
+    const demandType = $("#g-type").value || 'geracao,recebimento';
     const params = new URLSearchParams({
-      search: $("#f-search").value, env: $("#f-env").value, status: $("#f-status").value,
+      search: $("#g-search").value,
+      env: $("#g-env").value,
+      status: $("#g-status").value,
+      demand_type: demandType,
     });
     const rows = await api("/reqs?" + params);
-    $("#req-table").innerHTML = rows.length ? `
+    const active = rows.filter(r => r.status !== 'concluida' && r.status !== 'cancelada');
+    const shown = $("#g-status").value ? rows : active;
+
+    $("#g-table").innerHTML = shown.length ? `
       <table class="tbl"><thead><tr>
-        <th>REQ</th><th>CN</th><th>Env</th><th>Status</th><th>Senha</th><th>Certs</th><th>Criada</th><th></th>
+        <th>REQ</th><th>Tipo</th><th>CN</th><th>Env</th><th>Status</th><th>Senha</th><th>Certs</th><th>Criada</th><th></th>
       </tr></thead><tbody>
-      ${rows.map(r => `<tr>
+      ${shown.map(r => `<tr>
         <td class="mono">${esc(r.req_number)}</td>
+        <td>${demandBadge(r.demand_type)}</td>
         <td>${esc(r.cn)}</td>
         <td>${envBadge(r.env)}</td>
         <td>${statusBadge(r.status)}</td>
-        <td>${r.password ? `<span class="password-cell" data-pwd="${esc(r.password)}" title="Clique para copiar">••••••••</span>` : "—"}</td>
+        <td>${r.password ? `<span class="password-cell" data-pwd="${esc(r.password)}" title="Clique para copiar">••••••••</span>` : '—'}</td>
         <td>${r.cert_count}</td>
         <td>${fmtDate(r.created_at)}</td>
         <td><button class="btn btn-sm" data-open="${r.id}">Abrir</button></td>
-      </tr>`).join("")}</tbody></table>`
-      : `<div class="empty">Nenhuma demanda encontrada. Crie a primeira!</div>`;
+      </tr>`).join('')}
+      </tbody></table>`
+    : `<div class="empty">Nenhuma demanda em andamento. Crie uma nova ou aguarde o Monitor!</div>`;
 
     $$("[data-pwd]").forEach(el => el.onclick = () => copyText(el.dataset.pwd, "Senha copiada!"));
     $$("[data-open]").forEach(el => el.onclick = () => openReq(+el.dataset.open, load));
   }
-  $("#f-search").oninput = () => { clearTimeout(window._t); window._t = setTimeout(load, 300); };
-  $("#f-env").onchange = $("#f-status").onchange = load;
-  $("#new-req").onclick = () => newReqModal(load);
+
+  $("#g-search").oninput = () => { clearTimeout(window._gt); window._gt = setTimeout(load, 300); };
+  $("#g-env").onchange = $("#g-status").onchange = $("#g-type").onchange = load;
+  $("#g-new").onclick = () => newDemandModal('geracao', {}, load);
   await load();
 };
 
-function newReqModal(onDone) {
-  modal("Nova demanda", `
+/* ---------------- Demandas de Instalação ---------------- */
+views.instalacao = async () => {
+  main.innerHTML = `
+    <div class="view-header"><div>
+      <div class="view-title">🔧 Demandas de Instalação</div>
+      <div class="view-sub">REQs de instalação pendentes — somem ao ser concluídas</div>
+    </div></div>
+    <div class="panel">
+      <div class="toolbar" style="margin-bottom:12px">
+        <input class="input" id="i-search" placeholder="Buscar REQ, CN…" style="min-width:220px">
+        <select class="input" id="i-env"><option value="">Ambiente</option>${ENVS.map(e => `<option>${e}</option>`).join('')}</select>
+        <select class="input" id="i-status"><option value="">Somente Ativas</option>${STATUSES.map(s => `<option value="${s}">${STATUS_LABEL[s]}</option>`).join('')}</select>
+      </div>
+      <div id="i-table"></div>
+    </div>`;
+
+  async function load() {
+    const params = new URLSearchParams({
+      search: $("#i-search").value,
+      env: $("#i-env").value,
+      status: $("#i-status").value,
+      demand_type: 'instalacao',
+    });
+    const rows = await api("/reqs?" + params);
+    const shown = $("#i-status").value ? rows : rows.filter(r => r.status !== 'concluida' && r.status !== 'cancelada');
+
+    $("#i-table").innerHTML = shown.length ? `
+      <table class="tbl"><thead><tr>
+        <th>REQ</th><th>CN</th><th>Env</th><th>Status</th><th>Locais</th><th>Criada</th><th></th>
+      </tr></thead><tbody>
+      ${shown.map(r => `<tr>
+        <td class="mono">${esc(r.req_number)}</td>
+        <td>${esc(r.cn)}</td>
+        <td>${envBadge(r.env)}</td>
+        <td>${statusBadge(r.status)}</td>
+        <td>${r.location_count || 0}</td>
+        <td>${fmtDate(r.created_at)}</td>
+        <td><button class="btn btn-sm" data-open="${r.id}">Abrir</button></td>
+      </tr>`).join('')}
+      </tbody></table>`
+    : `<div class="empty">Sem demandas de instalação ativas! 🎉</div>`;
+
+    $$("[data-open]").forEach(el => el.onclick = () => openReq(+el.dataset.open, load));
+  }
+
+  $("#i-search").oninput = () => { clearTimeout(window._it); window._it = setTimeout(load, 300); };
+  $("#i-env").onchange = $("#i-status").onchange = load;
+  await load();
+};
+
+async function newDemandModal(defaultType, opts = {}, onDone) {
+  modal(`Nova Demanda — ${DEMAND_TYPES[defaultType] || defaultType}`, `
     <div class="form-row">
-      <div class="field"><label>Número da REQ</label>
-        <input class="input mono" id="n-req" placeholder="REQ0012345" maxlength="10"></div>
       <div class="field"><label>Ambiente</label>
-        <select class="input" id="n-env">${ENVS.map(e => `<option>${e}</option>`).join("")}</select></div>
+        <select class="input" id="nd-env">${ENVS.map(e => `<option ${e === (opts.env||'PRD') ? 'selected':''}>${e}</option>`).join('')}</select></div>
+      <div class="field"><label>Tipo</label>
+        <select class="input" id="nd-type">
+          <option value="geracao" ${defaultType==='geracao'?'selected':''}>Geração</option>
+          <option value="recebimento" ${defaultType==='recebimento'?'selected':''}>Recebimento</option>
+          <option value="revogacao" ${defaultType==='revogacao'?'selected':''}>Revogação</option>
+        </select></div>
     </div>
     <div class="field"><label>CN (Common Name)</label>
-      <input class="input" id="n-cn" placeholder="www.exemplo.com.br"></div>
+      <input class="input" id="nd-cn" placeholder="www.exemplo.com.br" value="${esc(opts.cn||'')}"></div>
     <div class="field"><label>Notas / observações</label>
-      <textarea class="input" id="n-notes" placeholder="Detalhes da demanda, solicitante, sistema…"></textarea></div>
-    <div class="checkbox-row"><input type="checkbox" id="n-auto" checked>
-      <label for="n-auto" style="margin:0">Gerar senha automaticamente</label></div>
+      <textarea class="input" id="nd-notes" placeholder="Detalhes da demanda, solicitante, sistema…"></textarea></div>
+    <div class="checkbox-row"><input type="checkbox" id="nd-auto" checked>
+      <label for="nd-auto" style="margin:0">Gerar senha automaticamente</label></div>
   `, { footer: `<button class="btn" data-close>Cancelar</button>
-                <button class="btn btn-primary" id="n-save">Criar demanda</button>` });
-  $("#n-save").onclick = async () => {
+                <button class="btn btn-primary" id="nd-save">Criar demanda</button>` });
+
+  $("#nd-save").onclick = async () => {
     try {
       const row = await api("/reqs", { method: "POST", json: {
-        req_number: $("#n-req").value, cn: $("#n-cn").value,
-        env: $("#n-env").value, notes: $("#n-notes").value,
-        auto_password: $("#n-auto").checked,
+        cn: $("#nd-cn").value,
+        env: $("#nd-env").value,
+        notes: $("#nd-notes").value,
+        demand_type: $("#nd-type").value,
+        auto_password: $("#nd-auto").checked,
       }});
+      // If created from monitor, flag the cert as em_renovacao
+      if (opts.certId) {
+        await api(`/monitor/certs/${opts.certId}/flag-renewal`, { method: "POST" }).catch(() => {});
+      }
       closeModal();
-      toast(`Demanda ${row.req_number} criada` + (row.password ? " · senha gerada" : ""));
+      toast(`Demanda ${row.req_number} criada` + (row.password ? ' · senha gerada' : ''));
       onDone && onDone();
     } catch (e) { toast(e.message, "err"); }
   };
 }
+
+/* ---------------- Demandas (legado) ---------------- */
 
 function fillTemplate(content, r) {
   const cert = (r.certificates && r.certificates[0]) || {};
@@ -428,12 +589,9 @@ function fillTemplate(content, r) {
 }
 
 async function openReq(id, onDone) {
-  const [r, tpls, wos] = await Promise.all([api(`/reqs/${id}`), api("/templates"), api(`/work-orders?req_id=${id}`)]);
+  const [r, tpls] = await Promise.all([api(`/reqs/${id}`), api("/templates")]);
+  const isInstall = r.demand_type === 'instalacao';
   modal(`${r.req_number} — ${r.cn}`, `
-    ${(r.status === 'cert_emitido' && wos.length === 0) ? `<div class="wo-alert-banner" style="margin-bottom:14px;padding:12px;background:var(--amber-soft);color:var(--amber);border-radius:8px;display:flex;justify-content:space-between;align-items:center;">
-      <span>⚠️ Certificado emitido — crie uma WO de instalação</span>
-      <button class="btn btn-sm" id="d-banner-create-wo" style="background:var(--bg-panel);color:var(--text);">Criar WO</button>
-    </div>` : ''}
     <div class="chips" style="margin-bottom:14px">${envBadge(r.env)} ${statusBadge(r.status)}
       <span class="muted">criada em ${fmtDateTime(r.created_at)}</span></div>
 
@@ -443,7 +601,8 @@ async function openReq(id, onDone) {
           `<option value="${s}" ${s === r.status ? "selected" : ""}>${STATUS_LABEL[s]}</option>`).join("")}</select></div>
       <div class="field"><label>Senha</label>
         <div style="display:flex;gap:6px">
-          <input class="input mono" id="d-pwd" value="${esc(r.password || "")}" readonly>
+          <input class="input mono" id="d-pwd" type="password" value="${esc(r.password || "")}" readonly>
+          <button class="btn btn-sm" id="d-pwd-toggle" title="Mostrar/ocultar">👁️</button>
           <button class="btn btn-sm" id="d-pwd-copy" title="Copiar">📋</button>
           <button class="btn btn-sm" id="d-pwd-regen" title="Regenerar">🎲</button>
         </div></div>
@@ -471,7 +630,11 @@ async function openReq(id, onDone) {
     <div id="d-locs">${r.locations.map(l => `
       <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
         <div><strong>${esc(l.server)}</strong> <span class="muted">${esc(l.path_or_store)}</span>
-          ${l.installed_at ? `<span class="muted">· instalado ${fmtDate(l.installed_at)}</span>` : ""}
+          ${isInstall ? `<select class="input" style="width:auto;margin-left:8px;display:inline" data-loc-status="${l.id}">
+            <option value="pendente" ${(l.status||'pendente')==='pendente'?'selected':''}>Pendente</option>
+            <option value="instalado" ${l.status==='instalado'?'selected':''}>Instalado</option>
+            <option value="falhou" ${l.status==='falhou'?'selected':''}>Falhou</option>
+          </select>` : (l.installed_at ? `<span class="muted">· instalado ${fmtDate(l.installed_at)}</span>` : '')}
           ${l.notes ? `<div class="muted">${esc(l.notes)}</div>` : ""}</div>
         <button class="btn btn-sm btn-danger" data-del-loc="${l.id}">✕</button>
       </div>`).join("") || `<div class="muted">Nenhum local registrado.</div>`}</div>
@@ -480,15 +643,6 @@ async function openReq(id, onDone) {
       <div class="field"><label>Caminho / store</label><input class="input" id="l-path" placeholder="IIS binding 443 · LocalMachine\\My"></div>
     </div>
     <button class="btn btn-sm" id="l-add">＋ Adicionar local</button>
-
-    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Work Orders vinculadas</h3>
-    <div id="d-wos">${wos.map(wo => `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
-        <div><span class="badge badge-${wo.wo_type}">${esc(wo.wo_number)}</span> <strong>${esc(wo.title)}</strong>
-          <span class="badge badge-wo-${wo.status}" style="margin-left:8px">${esc(wo.status.replace("_"," "))}</span>
-        </div>
-      </div>`).join("") || `<div class="muted">Nenhuma WO/CRQ vinculada.</div>`}</div>
-    <button class="btn btn-sm mt" id="d-create-wo">Criar WO de Instalação</button>
 
     <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Certificados vinculados</h3>
     ${r.certificates.length ? `<table class="tbl"><tbody>${r.certificates.map(c => `
@@ -515,6 +669,10 @@ async function openReq(id, onDone) {
     $("#d-tpl-copy").disabled = false;
   };
   $("#d-tpl-copy").onclick = () => copyText($("#d-tpl-preview").value, "Resposta copiada!");
+  $("#d-pwd-toggle").onclick = () => {
+    const el = $("#d-pwd");
+    el.type = el.type === 'password' ? 'text' : 'password';
+  };
   $("#d-pwd-copy").onclick = () => copyText($("#d-pwd").value, "Senha copiada!");
   $("#d-pwd-regen").onclick = async () => {
     if (!confirm("Regenerar a senha desta demanda?")) return;
@@ -522,6 +680,13 @@ async function openReq(id, onDone) {
     $("#d-pwd").value = res.password;
     toast("Nova senha gerada");
   };
+  // Location status tracking (instalação)
+  $$("[data-loc-status]").forEach(sel => sel.onchange = async () => {
+    try {
+      await api(`/locations/${sel.dataset.locStatus}/status`, { method: "PUT", json: { status: sel.value } });
+      toast(`Local atualizado: ${sel.value}`);
+    } catch (e) { toast(e.message, "err"); }
+  });
   $("#d-folder-make").onclick = async () => {
     const res = await api(`/reqs/${id}/folder`, { method: "POST" });
     toast("Pasta criada: " + res.folder);
@@ -547,26 +712,22 @@ async function openReq(id, onDone) {
     closeModal(); location.hash = "#/csr";
   };
   $("#d-save").onclick = async () => {
-    const res = await api(`/reqs/${id}`, { method: "PUT", json: {
-      status: $("#d-status").value, notes: $("#d-notes").value,
+    const newStatus = $("#d-status").value;
+    await api(`/reqs/${id}`, { method: "PUT", json: {
+      status: newStatus, notes: $("#d-notes").value,
     }});
-    if (res.suggest_wo && wos.length === 0) {
-      toast("⚠️ Certificado emitido — crie uma WO de instalação");
-      openReq(id, onDone); // reopen to show banner
-    } else {
-      closeModal(); toast("Demanda atualizada"); onDone && onDone();
+    closeModal(); toast("Demanda atualizada"); onDone && onDone();
+    // Ao concluir geração/recebimento, avançar mesma REQ para instalação
+    if (newStatus === 'concluida' && (r.demand_type === 'geracao' || r.demand_type === 'recebimento')) {
+      try {
+        await api(`/reqs/${id}/advance-to-installation`, { method: "POST" });
+        toast(`✅ ${r.req_number} avançou para Instalação!`);
+        if (onDone) onDone();
+        location.hash = '#/instalacao';
+      } catch (e) { toast(e.message, 'err'); }
     }
   };
   
-  const handleCreateWO = async () => {
-    try {
-      const wo = await api(`/reqs/${id}/create-installation-wo`, { method: "POST" });
-      toast(`WO criada: ${wo.wo_number}`);
-      openReq(id, onDone);
-    } catch (e) { toast(e.message, "err"); }
-  };
-  if ($("#d-create-wo")) $("#d-create-wo").onclick = handleCreateWO;
-  if ($("#d-banner-create-wo")) $("#d-banner-create-wo").onclick = handleCreateWO;
   $("#d-delete").onclick = async () => {
     if (!confirm(`Excluir a demanda ${r.req_number}? O histórico e locais serão removidos.`)) return;
     await api(`/reqs/${id}`, { method: "DELETE" });
@@ -1389,57 +1550,7 @@ function chartDonut(items) {
   </div>`;
 }
 
-views.analytics = async () => {
-  const a = await api("/analytics");
-  const ENV_COLOR = { PRD: "var(--red)", TQS: "var(--amber)", HMP: "var(--accent)", DES: "var(--green)" };
-  const health = [
-    { label: "Vencidos", n: a.cert_health.vencidos, color: "var(--red)" },
-    { label: "≤ 30 dias", n: a.cert_health.ate_30, color: "var(--amber)" },
-    { label: "31–90 dias", n: a.cert_health.ate_90, color: "var(--accent)" },
-    { label: "> 90 dias", n: a.cert_health.ok, color: "var(--green)" },
-  ];
-  const lanes = LANES.map(([lane, label]) => {
-    const parts = { alta: 0, media: 0, baixa: 0 };
-    a.tasks_by_lane.filter(r => r.lane === lane).forEach(r => parts[r.priority] = r.n);
-    return { label, parts, total: parts.alta + parts.media + parts.baixa };
-  });
-  const laneMax = Math.max(...lanes.map(l => l.total), 1);
-  const PRIO_COLOR = { alta: "var(--red)", media: "var(--amber)", baixa: "var(--gray)" };
-  const lanesHtml = lanes.map(l => `
-    <div class="hbar-row">
-      <div class="hbar-label">${l.label}</div>
-      <div class="hbar-track">${Object.entries(l.parts).map(([p, n]) => n
-        ? `<div class="hbar" style="width:${n / laneMax * 100}%;background:${PRIO_COLOR[p]}" title="${p}: ${n}"></div>` : "").join("")}</div>
-      <div class="hbar-val">${l.total}</div>
-    </div>`).join("");
-
-  main.innerHTML = `
-    <div class="view-header"><div>
-      <div class="view-title">Analytics</div>
-      <div class="view-sub">Visão consolidada de certificados, demandas e tarefas</div>
-    </div></div>
-    <div class="grid grid-2">
-      <div class="panel"><h3>Saúde dos certificados</h3>${chartDonut(health)}</div>
-      <div class="panel"><h3>Vencimentos — próximos 12 meses</h3>
-        ${chartVBars(a.expiring_by_month.map(r => ({ label: r.month, n: r.n })), { fmt: fmtMonth, color: "var(--amber)" })}</div>
-      <div class="panel"><h3>Demandas por status</h3>
-        ${chartDonut(STATUSES.map((s, i) => ({ label: STATUS_LABEL[s], n: a.by_status[s] || 0, color: PALETTE[i % PALETTE.length] })))}</div>
-      <div class="panel"><h3>Demandas por ambiente</h3>
-        ${chartDonut(ENVS.map(e => ({ label: e, n: a.by_env[e] || 0, color: ENV_COLOR[e] })))}</div>
-      <div class="panel"><h3>Demandas criadas por mês</h3>
-        ${chartVBars(a.reqs_by_month.map(r => ({ label: r.month, n: r.n })), { fmt: fmtMonth })}</div>
-      <div class="panel"><h3>Kanban — tarefas por coluna
-        <span class="muted" style="text-transform:none">(🔴 alta · 🟡 média · ⚪ baixa)</span></h3>${lanesHtml}</div>
-      <div class="panel"><h3>Tipos de chave</h3>
-        ${chartHBars(a.key_types.map(r => ({ label: r.label, n: r.n })))}</div>
-      <div class="panel"><h3>Principais emissores</h3>
-        ${chartHBars(a.issuers.map(r => ({ label: r.label, n: r.n })))}</div>
-      <div class="panel"><h3>Atividade — últimos 30 dias</h3>
-        ${chartVBars(a.activity_by_day.map(r => ({ label: r.day, n: r.n })), { fmt: d => d.slice(8), color: "var(--teal)" })}</div>
-    </div>`;
-};
-
-};
+/* views.analytics removida — dados fundidos no dashboard */
 
 /* ---------------- Usuários ---------------- */
 views.users = async () => {
@@ -1683,98 +1794,4 @@ applyAccent(localStorage.getItem("certhub-accent") || "blue");
   navigate();
 })();
 
-/* ---------------- Work Orders ---------------- */
-views.workOrders = async () => {
-  const [wos, reqs] = await Promise.all([api("/work-orders"), api("/reqs")]);
-  
-  main.innerHTML = `
-    <div class="view-header"><div>
-      <div class="view-title">Work Orders</div>
-      <div class="view-sub">Gerenciamento de WOs e CRQs</div>
-    </div>
-    <div class="toolbar">
-      <button class="btn btn-primary" id="wo-new">＋ Nova WO/CRQ</button>
-    </div></div>
-    <div class="panel">
-      ${wos.length ? `<table class="tbl"><thead><tr><th>Número</th><th>Tipo</th><th>Título</th><th>REQ</th><th>Ambiente</th><th>Status</th><th>Agendamento</th><th>Ações</th></tr></thead>
-        <tbody>${wos.map(wo => `
-          <tr>
-            <td class="mono"><strong>${esc(wo.wo_number)}</strong></td>
-            <td><span class="badge badge-${wo.wo_type}">${wo.wo_type}</span></td>
-            <td>${esc(wo.title)}</td>
-            <td class="mono">${esc(wo.req_number || "—")}</td>
-            <td>${wo.env ? envBadge(wo.env) : "—"}</td>
-            <td><span class="badge badge-wo-${wo.status}">${esc(wo.status.replace("_"," "))}</span></td>
-            <td>${wo.scheduled_at ? fmtDate(wo.scheduled_at) : "—"}</td>
-            <td><button class="btn btn-sm" onclick="editWO(${wo.id})">Detalhes</button></td>
-          </tr>`).join("")}
-        </tbody></table>` : `<div class="empty">Nenhuma Work Order encontrada.</div>`}
-    </div>`;
-
-  $("#wo-new").onclick = () => woModal(null, views.workOrders, reqs);
-  window.editWO = async (id) => {
-    const wo = await api(`/work-orders/${id}`);
-    woModal(wo, views.workOrders, reqs);
-  };
-};
-
-window.woModal = function(wo, onDone, reqs) {
-  const isEdit = !!wo;
-  const reqOpts = reqs.map(r => `<option value="${r.id}" ${wo && wo.parent_req_id === r.id ? "selected" : ""}>${esc(r.req_number)} - ${esc(r.cn)}</option>`).join("");
-  
-  modal(isEdit ? "Editar Work Order" : "Nova Work Order", `
-    <div class="form-row">
-      <div class="field"><label>Número</label><input class="input" id="w-num" value="${esc(wo?.wo_number || "")}" placeholder="WO12345"></div>
-      <div class="field"><label>Tipo</label><select class="input" id="w-type">
-        <option value="WO" ${wo?.wo_type === "WO" ? "selected" : ""}>WO</option>
-        <option value="CRQ" ${wo?.wo_type === "CRQ" ? "selected" : ""}>CRQ</option>
-      </select></div>
-    </div>
-    <div class="field"><label>Título</label><input class="input" id="w-title" value="${esc(wo?.title || "")}"></div>
-    <div class="field"><label>Demanda Vinculada (Parent REQ)</label><select class="input" id="w-req">
-      <option value="">— Nenhuma —</option>
-      ${reqOpts}
-    </select></div>
-    <div class="form-row">
-      <div class="field"><label>Status</label><select class="input" id="w-status">
-        <option value="aberta" ${wo?.status === "aberta" ? "selected" : ""}>Aberta</option>
-        <option value="em_andamento" ${wo?.status === "em_andamento" ? "selected" : ""}>Em Andamento</option>
-        <option value="concluida" ${wo?.status === "concluida" ? "selected" : ""}>Concluída</option>
-        <option value="cancelada" ${wo?.status === "cancelada" ? "selected" : ""}>Cancelada</option>
-      </select></div>
-      <div class="field"><label>Agendamento</label><input type="date" class="input" id="w-date" value="${esc(wo?.scheduled_at ? wo.scheduled_at.split('T')[0] : "")}"></div>
-    </div>
-    <div class="field"><label>Descrição</label><textarea class="input" id="w-desc">${esc(wo?.description || "")}</textarea></div>
-  `, { footer: `
-    ${isEdit ? `<button class="btn btn-danger" id="w-del">Excluir</button>` : ""}
-    <button class="btn btn-primary" id="w-save">Salvar</button>
-  `});
-
-  $("#w-save").onclick = async () => {
-    const payload = {
-      wo_number: $("#w-num").value,
-      wo_type: $("#w-type").value,
-      title: $("#w-title").value,
-      parent_req_id: $("#w-req").value ? parseInt($("#w-req").value) : null,
-      status: $("#w-status").value,
-      scheduled_at: $("#w-date").value || null,
-      description: $("#w-desc").value
-    };
-    try {
-      if (isEdit) {
-        await api(`/work-orders/${wo.id}`, { method: "PUT", json: payload });
-      } else {
-        await api("/work-orders", { method: "POST", json: payload });
-      }
-      closeModal(); onDone();
-    } catch (e) { toast(e.message, "err"); }
-  };
-
-  if (isEdit) {
-    $("#w-del").onclick = async () => {
-      if (!confirm("Excluir esta WO?")) return;
-      await api(`/work-orders/${wo.id}`, { method: "DELETE" });
-      closeModal(); onDone();
-    };
-  }
-}
+/* views.workOrders removida — WO/CRQ gerida dentro modal de instalação */
