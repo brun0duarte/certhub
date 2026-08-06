@@ -51,10 +51,42 @@ def dashboard():
         'SELECT lifecycle_status, COUNT(*) n FROM certificates GROUP BY lifecycle_status'
     ).fetchall()}
     
+    reqs_by_month = [dict(r) for r in conn.execute(
+        """SELECT strftime('%Y-%m', created_at) AS month, COUNT(*) n
+           FROM reqs WHERE created_at >= date('now','localtime','-12 months')
+           GROUP BY month ORDER BY month""")]
+
+    key_types = [dict(r) for r in conn.execute(
+        """SELECT COALESCE(NULLIF(key_type,''),'desconhecido') AS label, COUNT(*) n
+           FROM certificates GROUP BY label ORDER BY n DESC""")]
+
+    issuers = [dict(r) for r in conn.execute(
+        """SELECT COALESCE(NULLIF(issuer,''),'desconhecido') AS label, COUNT(*) n
+           FROM certificates GROUP BY label ORDER BY n DESC LIMIT 6""")]
+
+    activity_by_day = [dict(r) for r in conn.execute(
+        """SELECT strftime('%Y-%m-%d', created_at) AS day, COUNT(*) n
+           FROM activity_log WHERE created_at >= date('now','localtime','-30 days')
+           GROUP BY day ORDER BY day""")]
+
+    cert_health = {
+        "vencidos": conn.execute(
+            f"SELECT COUNT(*) FROM certificates WHERE {days_left_sql} < 0").fetchone()[0],
+        "ate_30": conn.execute(
+            f"SELECT COUNT(*) FROM certificates WHERE {days_left_sql} BETWEEN 0 AND 30").fetchone()[0],
+        "ate_90": conn.execute(
+            f"SELECT COUNT(*) FROM certificates WHERE {days_left_sql} BETWEEN 31 AND 90").fetchone()[0],
+        "ok": conn.execute(
+            f"SELECT COUNT(*) FROM certificates WHERE {days_left_sql} > 90").fetchone()[0],
+    }
+    
     conn.close()
     return {"alert_days": alert_days, "expiring": expiring, "by_env": by_env,
             "by_status": by_status, "next_expiring": next_expiring,
-            "activity": activity, "totals": totals, "lifecycle": lifecycle_counts}
+            "activity": activity, "totals": totals, "lifecycle": lifecycle_counts,
+            "reqs_by_month": reqs_by_month, "key_types": key_types,
+            "issuers": issuers, "activity_by_day": activity_by_day,
+            "cert_health": cert_health}
 
 
 @router.get("/analytics")
