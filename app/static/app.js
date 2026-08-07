@@ -751,11 +751,12 @@ function fillTemplate(content, r) {
 
 
     // Certificate details
-    vencimento: (cert.not_after || r.not_after) ? fmtDate(cert.not_after || r.not_after) : "",
-    validade: (cert.not_after || r.not_after) ? fmtDate(cert.not_after || r.not_after) : "",
-    not_after: (cert.not_after || r.not_after) ? fmtDate(cert.not_after || r.not_after) : "",
-    emissor: cert.issuer || cert.issuer_cn || r.issuer || r.emissor || "",
-    issuer: cert.issuer || cert.issuer_cn || r.issuer || r.emissor || "",
+    vencimento: (cert.not_after || r.not_after || r.vencimento) ? fmtDate(cert.not_after || r.not_after || r.vencimento) : "Aguardando emissão",
+    validade: (cert.not_after || r.not_after || r.vencimento) ? fmtDate(cert.not_after || r.not_after || r.vencimento) : "Aguardando emissão",
+    not_after: (cert.not_after || r.not_after || r.vencimento) ? fmtDate(cert.not_after || r.not_after || r.vencimento) : "Aguardando emissão",
+    emissor: cert.issuer_cn || cert.issuer || r.issuer_cn || r.issuer || r.emissor || "Aguardando emissão",
+    issuer: cert.issuer_cn || cert.issuer || r.issuer_cn || r.issuer || r.emissor || "Aguardando emissão",
+
     sans: cert.sans || r.sans || "",
     serial: cert.serial || r.serial || "",
     thumbprint: cert.thumbprint_sha1 || r.thumbprint_sha1 || "",

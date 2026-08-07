@@ -174,13 +174,21 @@ def get_req(req_id: int):
             "SELECT * FROM certificates WHERE req_id=? ORDER BY created_at DESC", (req_id,))]
         if not certs and req.get("cn"):
             certs = [dict(r) for r in conn.execute(
-                "SELECT * FROM certificates WHERE cn=? ORDER BY created_at DESC", (req["cn"],))]
+                "SELECT * FROM certificates WHERE cn=? OR sans LIKE ? ORDER BY created_at DESC", (req["cn"], f"%{req['cn']}%"))]
         if not certs:
             certs = [dict(r) for r in conn.execute(
                 """SELECT c.* FROM certificates c
                    JOIN install_locations l ON l.cert_id = c.id
                    WHERE l.req_id=? ORDER BY c.created_at DESC""", (req_id,))]
         req["certificates"] = certs
+        if certs:
+            c = certs[0]
+            req["not_after"] = c.get("not_after", "")
+            req["vencimento"] = c.get("not_after", "")
+            req["issuer"] = c.get("issuer_cn") or c.get("issuer") or ""
+            req["issuer_cn"] = c.get("issuer_cn") or c.get("issuer") or ""
+            req["emissor"] = c.get("issuer_cn") or c.get("issuer") or ""
+
 
         req["activity"] = [dict(r) for r in conn.execute(
             "SELECT * FROM activity_log WHERE req_id=? ORDER BY id DESC LIMIT 50", (req_id,))]
