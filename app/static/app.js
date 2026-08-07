@@ -58,6 +58,10 @@ function modal(title, bodyHtml, { footer = "", large = false } = {}) {
         ${footer ? `<div class="modal-footer">${footer}</div>` : ""}
       </div>
     </div>`;
+  
+  // Attach the close event to all buttons with data-close
+  $$("[data-close]", root).forEach(btn => btn.onclick = closeModal);
+  return root;
 }
 function closeModal() { $("#modal-root").innerHTML = ""; }
 
