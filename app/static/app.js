@@ -450,9 +450,7 @@ views.monitor = async () => {
         <td>${r.has_active_demand ? '<span class="badge badge-lc-em_renovacao">🔄 Em andamento</span>' : '<span class="badge badge-days-ok">Aguardando</span>'}</td>
         <td style="white-space:nowrap">
           ${r.has_active_demand ? '<span class="muted">Demanda ativa</span>' :
-            (r.ownership || 'interno') === 'interno'
-            ? `<button class="btn btn-sm btn-primary" data-gen="${r.id}" data-cn="${esc(r.cn)}" data-env="${esc(r.env||'PRD')}">📋 Geração</button>`
-            : `<button class="btn btn-sm" data-recv="${r.id}" data-cn="${esc(r.cn)}" data-env="${esc(r.env||'PRD')}">📥 Recebimento</button>`
+            `<button class="btn btn-sm btn-primary" data-renew="${r.id}" data-cn="${esc(r.cn)}" data-env="${esc(r.env||'PRD')}" data-ownership="${esc(r.ownership||'interno')}" data-partner="${esc(r.external_partner||'')}" data-email="${esc(r.partner_email||'')}">🔄 Renovar</button>`
           }
         </td>
       </tr>`;
@@ -460,13 +458,10 @@ views.monitor = async () => {
       </tbody></table>`
     : `<div class="empty">🎉 Nenhum certificado pendente${pendingOnly ? ' (filtro ativo)' : ''}!</div>`;
 
-    $$("[data-gen]").forEach(el => el.onclick = () => {
-      const cn = el.dataset.cn, env = el.dataset.env, certId = el.dataset.gen;
-      newDemandModal('geracao', { cn, env, certId }, load);
-    });
-    $$("[data-recv]").forEach(el => el.onclick = () => {
-      const cn = el.dataset.cn, env = el.dataset.env, certId = el.dataset.recv;
-      newDemandModal('recebimento', { cn, env, certId }, load);
+    $$("[data-renew]").forEach(el => el.onclick = () => {
+      const cn = el.dataset.cn, env = el.dataset.env, certId = el.dataset.renew;
+      const ownership = el.dataset.ownership, partner = el.dataset.partner, email = el.dataset.email;
+      newDemandModal('renovacao', { cn, env, certId, ownership, external_partner: partner, partner_email: email }, load);
     });
   }
 
@@ -598,16 +593,16 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
     </div>
     <div class="form-row">
       <div class="field"><label>Tipo de Demanda</label>
-        <select class="input" id="nd-type">
+        <select class="input" id="nd-type" ${defaultType === 'renovacao' ? 'disabled' : ''}>
           <option value="geracao" ${defaultType==='geracao'?'selected':''}>Geração</option>
           <option value="recebimento" ${defaultType==='recebimento'?'selected':''}>Recebimento</option>
           <option value="renovacao" ${defaultType==='renovacao'?'selected':''}>Renovação</option>
           <option value="revogacao" ${defaultType==='revogacao'?'selected':''}>Revogação</option>
         </select></div>
       <div class="field"><label>Propriedade do Certificado</label>
-        <select class="input" id="nd-ownership">
-          <option value="interno">🔒 Privado / Interno (Chave Privada controlada)</option>
-          <option value="externo" ${opts.external_partner ? 'selected' : ''}>🌐 Público / Externo (Sem Chave Privada)</option>
+        <select class="input" id="nd-ownership" ${defaultType === 'renovacao' ? 'disabled' : ''}>
+          <option value="interno" ${(opts.ownership || 'interno') === 'interno' ? 'selected' : ''}>🔒 Privado / Interno (Chave Privada controlada)</option>
+          <option value="externo" ${(opts.ownership || 'interno') === 'externo' ? 'selected' : ''}>🌐 Público / Externo (Sem Chave Privada)</option>
         </select></div>
     </div>
     <div class="field"><label>CN (Common Name)</label>
@@ -616,11 +611,11 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
     </div>
     <div class="form-row" id="nd-partner-box" style="display:none">
       <div class="field"><label>Parceiro Externo / Solicitante</label>
-        <input class="input" id="nd-partner" placeholder="Ex: Empresa Parceira, Gateway X" value="${esc(opts.external_partner||'')}"></div>
+        <input class="input" id="nd-partner" placeholder="Ex: Empresa Parceira, Gateway X" value="${esc(opts.external_partner||'')}" ${defaultType === 'renovacao' ? 'readonly' : ''}></div>
       <div class="field"><label>E-mail do Parceiro</label>
-        <input class="input" id="nd-partner-email" placeholder="parceiro@empresa.com" value="${esc(opts.partner_email||'')}"></div>
+        <input class="input" id="nd-partner-email" placeholder="parceiro@empresa.com" value="${esc(opts.partner_email||'')}" ${defaultType === 'renovacao' ? 'readonly' : ''}></div>
       <div class="field"><label>Matrícula / ID</label>
-        <input class="input mono" id="nd-partner-reg" placeholder="MAT-12345" value="${esc(opts.partner_registration||'')}"></div>
+        <input class="input mono" id="nd-partner-reg" placeholder="MAT-12345" value="${esc(opts.partner_registration||'')}" ${defaultType === 'renovacao' ? 'readonly' : ''}></div>
     </div>
     <div class="form-row">
       <div class="field" id="nd-ticket-container">
@@ -682,7 +677,7 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
         cn: $("#nd-cn").value,
         env: env,
         notes: $("#nd-notes").value,
-        demand_type: $("#nd-type").value,
+        demand_type: $("#nd-type").value, // it's disabled but .value still gets the selected option
         auto_password: $("#nd-auto").checked,
         external_crq: isPrdEnv ? ticketVal : '',
         external_wo: !isPrdEnv ? ticketVal : '',
@@ -847,6 +842,11 @@ async function openReq(id, onDone) {
       <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">
         Parceiro Externo / Solicitante (para Certificados Públicos)
       </h3>
+      ${r.demand_type === 'renovacao' ? `
+      <div class="panel" style="background:var(--blue-soft);border:1px solid var(--blue);padding:8px 12px;margin-bottom:12px;font-size:12px">
+        ℹ️ <strong>Passo 1:</strong> Notifique o parceiro abaixo para que nos envie o certificado atualizado (clique no botão 'Notificar Parceiro' para gerar a resposta pronta).
+      </div>
+      ` : ''}
       <div class="form-row">
         <div class="field"><label>Nome / Empresa Parceira</label>
           <input class="input" id="d-partner" placeholder="Ex: Terceiro X, Gateway Y" value="${esc(r.external_partner || (cert && cert.external_partner) || '')}"></div>
@@ -900,7 +900,7 @@ async function openReq(id, onDone) {
 
     <div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 8px">
       <h3 style="margin:0;font-size:13px;color:var(--text-dim);text-transform:uppercase">Certificado Emitido</h3>
-      <button class="btn btn-sm btn-primary" id="d-import-cert">📥 Importar Certificado (.cer / .pfx)</button>
+      <button class="btn btn-sm btn-primary" id="d-import-cert">📥 Importar Certificado (.cer / .pfx / .pem)</button>
     </div>
     ${r.certificates.length ? `<table class="tbl"><tbody>${r.certificates.map(c => `
       <tr>
@@ -910,7 +910,7 @@ async function openReq(id, onDone) {
         <td class="mono muted">${esc((c.thumbprint_sha1 || "").slice(0, 16))}…</td>
       </tr>`).join("")}</tbody></table>`
       : `<div class="panel mt" style="background:var(--bg-sunken);padding:8px 12px;border-left:3px solid var(--amber);font-size:12px">
-          ⚠️ <strong>Certificado Pendente:</strong> É necessário importar o certificado emitido antes de concluir esta demanda.
+          ⚠️ <strong>Certificado Pendente:</strong> Você precisa importar o certificado emitido (Arquivo .cer/.pfx ou Texto PEM) usando o botão acima para concluir esta demanda.
          </div>`}
 
 
@@ -971,7 +971,7 @@ async function openReq(id, onDone) {
         <div class="t-when">${fmtDateTime(a.created_at)}</div></li>`).join("") || ""}</ul>
   `, { large: true, footer: `
       <button class="btn btn-danger" id="d-delete">Excluir demanda</button>
-      <button class="btn" id="d-gocsr">📝 Gerar CSR</button>
+      ${(!isPublic && (r.demand_type === 'geracao' || r.demand_type === 'renovacao')) ? `<button class="btn" id="d-gocsr">📝 Gerar CSR</button>` : ''}
       <button class="btn btn-primary" id="d-save">Salvar</button>` });
 
   if ($("#d-import-cert")) {
@@ -1046,10 +1046,12 @@ async function openReq(id, onDone) {
     await api(`/locations/${el.dataset.delLoc}`, { method: "DELETE" });
     closeModal(); openReq(id, onDone);
   });
-  $("#d-gocsr").onclick = () => {
-    csrPrefill = { req_id: id, cn: r.cn, req_number: r.req_number };
-    closeModal(); location.hash = "#/csr";
-  };
+  if ($("#d-gocsr")) {
+    $("#d-gocsr").onclick = () => {
+      csrPrefill = { req_id: id, cn: r.cn, req_number: r.req_number };
+      closeModal(); location.hash = "#/csr";
+    };
+  }
   if ($("#d-notify-partner")) {
     $("#d-notify-partner").onclick = () => {
       const partnerTpl = tpls.find(t => t.name.toLowerCase().includes("parceiro") || t.name.toLowerCase().includes("vencimento")) || tpls[0];
@@ -1058,8 +1060,21 @@ async function openReq(id, onDone) {
         $("#d-tpl").onchange();
         $("#d-tpl-preview").scrollIntoView({ behavior: 'smooth', block: 'center' });
         toast("Template de notificação gerado abaixo!");
+      } else {
+        toast("Nenhum template de notificação encontrado", "err");
       }
     };
+    
+    // Auto-select template if this is an external renewal
+    if (r.demand_type === 'renovacao' && isPublic) {
+        setTimeout(() => {
+            const partnerTpl = tpls.find(t => t.name.toLowerCase().includes("parceiro") || t.name.toLowerCase().includes("vencimento")) || tpls[0];
+            if (partnerTpl) {
+                $("#d-tpl").value = partnerTpl.id;
+                $("#d-tpl").onchange();
+            }
+        }, 100);
+    }
   }
   if ($("#d-ownership")) {
     $("#d-ownership").onchange = () => {
@@ -1083,8 +1098,8 @@ async function openReq(id, onDone) {
       closeModal(); toast("Demanda atualizada"); onDone && onDone();
 
 
-      // Ao concluir geração/recebimento, avançar mesma REQ para instalação
-      if (newStatus === 'concluida' && (r.demand_type === 'geracao' || r.demand_type === 'recebimento')) {
+      // Ao concluir geração/recebimento/renovação, avançar mesma REQ para instalação
+      if (newStatus === 'concluida' && (r.demand_type === 'geracao' || r.demand_type === 'recebimento' || r.demand_type === 'renovacao')) {
         try {
           await api(`/reqs/${id}/advance-to-installation`, { method: "POST" });
           toast(`✅ ${r.req_number} avançou para Instalação!`);

@@ -293,8 +293,8 @@ def advance_to_installation(req_id: int):
         row = conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Demanda não encontrada")
-        if row['demand_type'] not in ('geracao', 'recebimento'):
-            raise HTTPException(400, "Só demandas de geração/recebimento podem avançar para instalação")
+        if row['demand_type'] not in ('geracao', 'recebimento', 'renovacao'):
+            raise HTTPException(400, "Só demandas de geração/recebimento/renovação podem avançar para instalação")
         conn.execute("""
             UPDATE reqs SET demand_type='instalacao', status='aberta',
                            updated_at=datetime('now','localtime')
