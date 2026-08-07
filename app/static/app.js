@@ -942,60 +942,10 @@ async function openReq(id, onDone) {
 
   if ($("#d-import-cert")) {
     $("#d-import-cert").onclick = () => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = ".cer,.crt,.pem,.pfx,.p12";
-      input.onchange = async () => {
-        const file = input.files[0];
-        if (!file) return;
-        let pwd = "";
-        if (file.name.endsWith(".pfx") || file.name.endsWith(".p12")) {
-          pwd = prompt("Senha do arquivo PFX (se houver):", r.password || "") || "";
-        }
-        const fd = new FormData();
-        fd.append("file", file);
-        fd.append("password", pwd);
-        fd.append("req_id", id);
-        try {
-          const res = await api("/certs/import", { method: "POST", body: fd });
-          if (!res.chain_found) {
-            modal("⚠️ Cadeia de Certificação não encontrada", `
-              <div class="banner banner-warn" style="margin-bottom:12px">
-                A cadeia de certificação (CA) do emissor <strong>"${esc(res.issuer_name)}"</strong> não foi previamente cadastrada no banco de dados do sistema.
-              </div>
-              <p style="margin:12px 0;font-size:13px">Para garantir a validação completa da cadeia no momento da instalação, você pode importar o certificado da CA Emissora (Raiz ou Intermediária) agora.</p>
-            `, { footer: `
-              <button class="btn" id="ca-skip">Continuar sem CA</button>
-              <button class="btn btn-primary" id="ca-import">📥 Importar CA Emissora</button>
-            `});
-            $("#ca-skip").onclick = () => { closeModal(); openReq(id, onDone); };
-            $("#ca-import").onclick = () => {
-              closeModal();
-              const caInput = document.createElement("input");
-              caInput.type = "file";
-              caInput.accept = ".cer,.crt,.pem";
-              caInput.onchange = async () => {
-                const caFile = caInput.files[0];
-                if (!caFile) return;
-                const caFd = new FormData();
-                caFd.append("file", caFile);
-                try {
-                  await api("/certs/import", { method: "POST", body: caFd });
-                  toast("✅ Certificado da CA Emissora importado com sucesso!");
-                  openReq(id, onDone);
-                } catch (err) { toast(err.message, "err"); }
-              };
-              caInput.click();
-            };
-          } else {
-            toast("✅ Certificado importado e vinculado à CA emissora (" + res.issuer_name + ")");
-            closeModal(); openReq(id, onDone);
-          }
-        } catch (e) { toast(e.message, "err"); }
-      };
-      input.click();
+      importCertModal(() => { openReq(id, onDone); }, id);
     };
   }
+
 
   $$("[data-open-past]").forEach(btn => btn.onclick = () => {
     closeModal();
@@ -1541,35 +1491,83 @@ function certDetail(c, onDone) {
   };
 }
 
-async function importCertModal(onDone) {
+async function importCertModal(onDone, defaultReqId = null) {
   const reqs = await api("/reqs");
-  modal("Importar certificado", `
-    <div class="field"><label>Arquivo (.cer, .crt, .pem, .der, .pfx, .p12)</label>
-      <input class="input" type="file" id="i-file" accept=".cer,.crt,.pem,.der,.pfx,.p12"></div>
-    <div class="field"><label>Senha (apenas para PFX/P12)</label>
-      <input class="input" type="password" id="i-pwd"></div>
-    <div class="field"><label>Vincular à demanda (opcional)</label>
+  modal("Importar Certificado", `
+    <div style="display:flex;gap:16px;margin-bottom:14px;border-bottom:1px solid var(--border);padding-bottom:10px">
+      <label style="cursor:pointer;font-weight:600;display:flex;align-items:center;gap:6px">
+        <input type="radio" name="ic-mode" value="file" checked> 📁 Enviar Arquivo (.cer, .crt, .pem, .pfx)
+      </label>
+      <label style="cursor:pointer;font-weight:600;display:flex;align-items:center;gap:6px">
+        <input type="radio" name="ic-mode" value="text"> 📝 Colar Conteúdo PEM
+      </label>
+    </div>
+
+    <div id="ic-box-file">
+      <div class="field"><label>Arquivo (.cer, .crt, .pem, .der, .pfx, .p12)</label>
+        <input class="input" type="file" id="i-file" accept=".cer,.crt,.pem,.der,.pfx,.p12"></div>
+      <div class="field"><label>Senha (apenas para PFX/P12)</label>
+        <input class="input" type="password" id="i-pwd" placeholder="Senha do arquivo PFX (se houver)"></div>
+    </div>
+
+    <div id="ic-box-text" style="display:none">
+      <div class="field"><label>Conteúdo PEM (-----BEGIN CERTIFICATE-----)</label>
+        <textarea class="input mono" id="i-pem-text" rows="8" placeholder="-----BEGIN CERTIFICATE-----\nMIIDXzCCAkegAwIBAgIU...\n-----END CERTIFICATE-----"></textarea></div>
+    </div>
+
+    <div class="field mt"><label>Vincular à demanda (opcional)</label>
       <select class="input" id="i-req"><option value="">— nenhuma —</option>
-        ${reqs.map(r => `<option value="${r.id}">${esc(r.req_number)} · ${esc(r.cn)} (${r.env})</option>`).join("")}
+        ${reqs.map(r => `<option value="${r.id}" ${r.id === defaultReqId ? "selected" : ""}>${esc(r.req_number)} · ${esc(r.cn)} (${r.env})</option>`).join("")}
       </select></div>
-    <div class="muted">Os campos (CN, SANs, emissor, validade, thumbprint…) serão lidos automaticamente.</div>
+    <div class="muted">Os metadados (CN, SANs, Emissor, Validade, Serial, Thumbprint) serão lidos automaticamente.</div>
   `, { footer: `<button class="btn" data-close>Cancelar</button>
-                <button class="btn btn-primary" id="i-go">Importar</button>` });
+                <button class="btn btn-primary" id="i-go">Importar Certificado</button>` });
+
+  $$("[name='ic-mode']").forEach(radio => radio.onchange = () => {
+    const isText = $("input[name='ic-mode']:checked").value === 'text';
+    $("#ic-box-file").style.display = isText ? 'none' : 'block';
+    $("#ic-box-text").style.display = isText ? 'block' : 'none';
+  });
+
   $("#i-go").onclick = async () => {
-    const file = $("#i-file").files[0];
-    if (!file) return toast("Selecione um arquivo", "err");
+    const isText = $("input[name='ic-mode']:checked").value === 'text';
     const fd = new FormData();
-    fd.append("file", file);
-    fd.append("password", $("#i-pwd").value);
+    if (isText) {
+      const textVal = $("#i-pem-text").value.trim();
+      if (!textVal) return toast("Cole o conteúdo PEM do certificado", "err");
+      fd.append("pem_text", textVal);
+    } else {
+      const file = $("#i-file").files[0];
+      if (!file) return toast("Selecione um arquivo de certificado", "err");
+      fd.append("file", file);
+      fd.append("password", $("#i-pwd").value);
+    }
     if ($("#i-req").value) fd.append("req_id", $("#i-req").value);
+
     try {
       const cert = await api("/certs/import", { method: "POST", body: fd });
       closeModal();
-      toast(`Certificado ${cert.cn} importado · vence ${fmtDate(cert.not_after)}`);
-      onDone && onDone();
+      toast(`✅ Certificado ${cert.cn} importado · vence ${fmtDate(cert.not_after)}`);
+
+      if (!cert.chain_found && cert.issuer_name) {
+        modal("⚠️ Cadeia de Certificação não encontrada", `
+          <div class="banner banner-warn" style="margin-bottom:12px">
+            A cadeia de certificação (CA) do emissor <strong>"${esc(cert.issuer_name)}"</strong> não foi identificada no sistema.
+          </div>
+          <p style="margin:12px 0;font-size:13px">Deseja importar o certificado da CA Emissora (Raiz ou Intermediária) agora?</p>
+        `, { footer: `
+          <button class="btn" id="ca-skip">Continuar sem CA</button>
+          <button class="btn btn-primary" id="ca-import">📥 Importar CA Emissora</button>
+        `});
+        $("#ca-skip").onclick = () => { closeModal(); onDone && onDone(); };
+        $("#ca-import").onclick = () => { closeModal(); importCertModal(onDone); };
+      } else {
+        onDone && onDone();
+      }
     } catch (e) { toast(e.message, "err"); }
   };
 }
+
 
 /* ---------------- Senhas ---------------- */
 views.passwords = async () => {

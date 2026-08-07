@@ -99,13 +99,24 @@ def relink_certs():
 
 
 @router.post("/certs/import")
-async def import_cert(file: UploadFile = File(...), password: str = Form(""),
+async def import_cert(file: UploadFile | None = File(None),
+                      pem_text: str = Form(""),
+                      password: str = Form(""),
                       req_id: int | None = Form(None)):
-    data = await file.read()
+    if pem_text and pem_text.strip():
+        data = pem_text.strip().encode("utf-8")
+        filename = "certificado.pem"
+    elif file and file.filename:
+        data = await file.read()
+        filename = file.filename
+    else:
+        raise HTTPException(400, "Envie um arquivo de certificado ou cole o conteúdo PEM.")
+
     try:
-        info = certparse.parse_certificate(data, file.filename or "", password or None)
+        info = certparse.parse_certificate(data, filename, password or None)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
 
     conn = get_db()
     file_path = ""
