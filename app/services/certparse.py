@@ -93,7 +93,8 @@ def _extract(cert: x509.Certificate) -> dict:
         "issuer_cn": _cn(cert.issuer),
         "cert_type": cert_type,
         "sans": ", ".join(dict.fromkeys(sans)),
-        "serial": format(cert.serial_number, "x").upper(),
+        "serial": format(abs(cert.serial_number), "x").upper() if cert.serial_number else "",
+
         "thumbprint_sha1": cert.fingerprint(hashes.SHA1()).hex().upper(),
         "not_before": not_before_dt.strftime("%Y-%m-%d %H:%M:%S") if not_before_dt else "",
         "not_after": not_after_dt.strftime("%Y-%m-%d %H:%M:%S") if not_after_dt else "",

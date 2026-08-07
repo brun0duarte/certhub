@@ -135,7 +135,8 @@ async def import_cert(file: UploadFile | None = File(None),
     else:
         folder = Path(base) / "certs"
         folder.mkdir(parents=True, exist_ok=True)
-    safe_name = folders.sanitize(Path(file.filename or "certificado").name)
+    safe_name = folders.sanitize(Path(filename or "certificado.crt").name)
+
     dest = folder / safe_name
     dest.write_bytes(data)
     file_path = str(dest)
