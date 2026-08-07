@@ -6,8 +6,11 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from datetime import datetime, timezone
 
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 from ..db import CERT_TYPES, get_db, get_setting, log_activity, LIFECYCLE_STATUSES
 from ..services import certparse, folders
+
 
 router = APIRouter(tags=["certs"])
 
@@ -186,13 +189,33 @@ async def import_cert(file: UploadFile | None = File(None),
         conn.execute("UPDATE reqs SET status='cert_emitido', "
                      "updated_at=datetime('now','localtime') WHERE id=? AND status IN ('aberta','csr_gerada')",
                      (req_id,))
-    conn.commit()
+    # Confere se a chave pública do certificado corresponde à CSR gerada nesta demanda
+    csr_match = None
+    if req_id:
+        csr_row = conn.execute("SELECT csr_pem FROM reqs WHERE id=?", (req_id,)).fetchone()
+        csr_pem = csr_row["csr_pem"] if csr_row and csr_row["csr_pem"] else None
+        if not csr_pem:
+            c_row = conn.execute("SELECT pem FROM csrs WHERE req_id=? ORDER BY id DESC LIMIT 1", (req_id,)).fetchone()
+            csr_pem = c_row["pem"] if c_row else None
+
+        if csr_pem:
+            try:
+                cert_obj = certparse._load_x509(data)
+                csr_obj = x509.load_pem_x509_csr(csr_pem.encode())
+                cert_pub = cert_obj.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+                csr_pub = csr_obj.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+                csr_match = (cert_pub == csr_pub)
+            except Exception:
+                csr_match = None
+
     row = dict(conn.execute("SELECT * FROM certificates WHERE id=?", (cert_id,)).fetchone())
     row["chain_found"] = chain_found
     row["issuer_name"] = issuer_cn or issuer_dn or "Desconhecido"
     row["chain_ca"] = dict(ca_row) if ca_row else None
+    row["csr_match"] = csr_match
     conn.close()
     return row
+
 
 
 

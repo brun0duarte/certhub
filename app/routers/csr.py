@@ -99,6 +99,14 @@ def generate_csr(body: CsrIn):
         raise HTTPException(400, "Engine inválida (local, certreq ou hsmutil)")
 
     log_activity(conn, "csr_gerada", detail, body.req_id)
+    if result.get("csr_pem"):
+        conn.execute("""
+            INSERT INTO csrs (cn, sans, subject, key_type, req_id, pem)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (cn, ", ".join(body.sans), f"CN={cn}", body.key_type, body.req_id, result["csr_pem"]))
+        if body.req_id:
+            conn.execute("UPDATE reqs SET csr_pem=? WHERE id=?", (result["csr_pem"], body.req_id))
+
     if req and result.get("ok"):
         conn.execute("UPDATE reqs SET status='csr_gerada', "
                      "updated_at=datetime('now','localtime') WHERE id=? AND status='aberta'",
@@ -106,6 +114,7 @@ def generate_csr(body: CsrIn):
     conn.commit()
     conn.close()
     return result
+
 
 
 # ---------------- decoder e repositório de CSRs ----------------

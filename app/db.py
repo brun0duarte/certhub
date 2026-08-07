@@ -380,13 +380,14 @@ def init_db():
                 pass
         version = 12
 
-    if version >= 12 and version < 16:
+    if version >= 12 and version < 17:
         for col_sql in [
             "ALTER TABLE reqs ADD COLUMN external_crq TEXT DEFAULT ''",
             "ALTER TABLE reqs ADD COLUMN external_partner TEXT DEFAULT ''",
             "ALTER TABLE reqs ADD COLUMN partner_email TEXT DEFAULT ''",
             "ALTER TABLE reqs ADD COLUMN partner_registration TEXT DEFAULT ''",
             "ALTER TABLE reqs ADD COLUMN ownership TEXT NOT NULL DEFAULT 'interno'",
+            "ALTER TABLE reqs ADD COLUMN csr_pem TEXT DEFAULT ''",
             "ALTER TABLE certificates ADD COLUMN external_partner TEXT DEFAULT ''",
             "ALTER TABLE certificates ADD COLUMN partner_email TEXT DEFAULT ''",
             "ALTER TABLE certificates ADD COLUMN partner_registration TEXT DEFAULT ''",
@@ -395,11 +396,12 @@ def init_db():
                 conn.execute(col_sql)
             except sqlite3.OperationalError:
                 pass
-        version = 16
+        version = 17
 
     if version > 0:
         conn.execute(f"PRAGMA user_version = {version}")
         conn.commit()
+
 
 
 

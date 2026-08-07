@@ -48,21 +48,26 @@ async function copyText(text, label = "Copiado!") {
 function modal(title, bodyHtml, { footer = "", large = false } = {}) {
   const root = $("#modal-root");
   root.innerHTML = `
-    <div class="modal-backdrop">
+    <div class="modal-overlay">
       <div class="modal ${large ? "modal-lg" : ""}">
         <div class="modal-header">
-          <div class="modal-title">${title}</div>
-          <button class="modal-close" data-close>&times;</button>
+          <h2>${title}</h2>
+          <button class="btn btn-ghost btn-sm" data-close>&times;</button>
         </div>
         <div class="modal-body">${bodyHtml}</div>
         ${footer ? `<div class="modal-footer">${footer}</div>` : ""}
       </div>
     </div>`;
-  
-  // Attach the close event to all buttons with data-close
-  $$("[data-close]", root).forEach(btn => btn.onclick = closeModal);
+
+  const overlay = $(".modal-overlay", root);
+  if (overlay) {
+    overlay.onclick = e => {
+      if (e.target === overlay || e.target.closest("[data-close]")) closeModal();
+    };
+  }
   return root;
 }
+
 function closeModal() { $("#modal-root").innerHTML = ""; }
 
 window.showSanModal = function(mainCn, sansString) {
@@ -1610,9 +1615,16 @@ async function importCertModal(onDone, defaultReqId = null) {
     try {
       const cert = await api("/certs/import", { method: "POST", body: fd });
       closeModal();
-      toast(`✅ Certificado ${cert.cn} importado · vence ${fmtDate(cert.not_after)}`);
+      if (cert.csr_match === false) {
+        toast(`⚠️ ATENÇÃO: O certificado ${cert.cn} NÃO corresponde à CSR gerada nesta demanda!`, "err");
+      } else if (cert.csr_match === true) {
+        toast(`✅ Certificado ${cert.cn} verificado: Chave pública corresponde à CSR!`, "ok");
+      } else {
+        toast(`✅ Certificado ${cert.cn} importado · vence ${fmtDate(cert.not_after)}`);
+      }
 
       if (!cert.chain_found && cert.issuer_name) {
+
         modal("⚠️ Cadeia de Certificação não encontrada", `
           <div class="banner banner-warn" style="margin-bottom:12px">
             A cadeia de certificação (CA) do emissor <strong>"${esc(cert.issuer_name)}"</strong> não foi identificada no sistema.
