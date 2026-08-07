@@ -41,7 +41,13 @@ def _extract(cert: x509.Certificate) -> dict:
     sans = []
     try:
         ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
-        sans = ext.value.get_values_for_type(x509.DNSName)
+        for name in ext.value:
+            if isinstance(name, x509.DNSName):
+                sans.append(name.value)
+            elif isinstance(name, x509.IPAddress):
+                sans.append(str(name.value))
+            elif hasattr(name, "value"):
+                sans.append(str(name.value))
     except x509.ExtensionNotFound:
         pass
 
@@ -77,16 +83,20 @@ def _extract(cert: x509.Certificate) -> dict:
     else:
         cert_type = ""
 
+    not_before_dt = getattr(cert, "not_valid_before_utc", None) or getattr(cert, "not_valid_before", None)
+    not_after_dt = getattr(cert, "not_valid_after_utc", None) or getattr(cert, "not_valid_after", None)
+
     return {
         "cn": _cn(cert.subject),
         "subject": cert.subject.rfc4514_string(),
         "issuer": cert.issuer.rfc4514_string(),
         "issuer_cn": _cn(cert.issuer),
         "cert_type": cert_type,
-        "sans": ", ".join(sans),
+        "sans": ", ".join(dict.fromkeys(sans)),
         "serial": format(cert.serial_number, "x").upper(),
         "thumbprint_sha1": cert.fingerprint(hashes.SHA1()).hex().upper(),
-        "not_before": cert.not_valid_before_utc.strftime("%Y-%m-%d %H:%M:%S"),
-        "not_after": cert.not_valid_after_utc.strftime("%Y-%m-%d %H:%M:%S"),
+        "not_before": not_before_dt.strftime("%Y-%m-%d %H:%M:%S") if not_before_dt else "",
+        "not_after": not_after_dt.strftime("%Y-%m-%d %H:%M:%S") if not_after_dt else "",
         "key_type": key_type,
     }
+
