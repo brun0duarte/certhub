@@ -131,8 +131,12 @@ const LIFECYCLE_STATUS = {
   fim_de_vida: 'Fim de Vida',
   em_renovacao: 'Em Renovação',
 };
-const OWNERSHIP_LABEL = { interno: 'Interno', externo: 'Externo / Parceiro' };
-const ownershipBadge = o => `<span class="badge badge-lc-${esc(o)}">${esc(OWNERSHIP_LABEL[o] || o)}</span>`;
+const OWNERSHIP_LABEL = { interno: 'Privado (Interno)', externo: 'Público (Externo)' };
+const ownershipBadge = o => {
+  const isPub = o === 'externo' || o === 'publico';
+  return `<span class="badge ${isPub ? 'badge-purple' : 'badge-blue'}" title="${isPub ? 'Certificado Público / Chave privada não controlada internamente' : 'Certificado Privado / Chave privada controlada internamente'}">${isPub ? '🌐 Público' : '🔒 Privado'}</span>`;
+};
+
 const envBadge = e => `<span class="badge badge-${esc(e)}">${esc(e)}</span>`;
 const statusBadge = s => `<span class="badge badge-${esc(s)}">${esc(STATUS_LABEL[s] || s)}</span>`;
 const demandBadge = d => `<span class="badge badge-demand-${esc(d)}">${esc(DEMAND_TYPES[d] || d)}</span>`;
@@ -593,19 +597,24 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
         <select class="input" id="nd-env">${ENVS.map(e => `<option ${e === (opts.env||'PRD') ? 'selected':''}>${e}</option>`).join('')}</select></div>
     </div>
     <div class="form-row">
-      <div class="field"><label>Tipo</label>
+      <div class="field"><label>Tipo de Demanda</label>
         <select class="input" id="nd-type">
           <option value="geracao" ${defaultType==='geracao'?'selected':''}>Geração</option>
           <option value="recebimento" ${defaultType==='recebimento'?'selected':''}>Recebimento</option>
           <option value="renovacao" ${defaultType==='renovacao'?'selected':''}>Renovação</option>
           <option value="revogacao" ${defaultType==='revogacao'?'selected':''}>Revogação</option>
         </select></div>
-      <div class="field"><label>CN (Common Name)</label>
-        <input class="input" id="nd-cn" placeholder="www.exemplo.com.br" value="${esc(opts.cn||'')}">
-        <div id="nd-cn-notice" style="display:none;font-size:11px;color:var(--green);margin-top:3px"></div>
-      </div>
+      <div class="field"><label>Propriedade do Certificado</label>
+        <select class="input" id="nd-ownership">
+          <option value="interno">🔒 Privado / Interno (Chave Privada controlada)</option>
+          <option value="externo" ${opts.external_partner ? 'selected' : ''}>🌐 Público / Externo (Sem Chave Privada)</option>
+        </select></div>
     </div>
-    <div class="form-row">
+    <div class="field"><label>CN (Common Name)</label>
+      <input class="input" id="nd-cn" placeholder="www.exemplo.com.br" value="${esc(opts.cn||'')}">
+      <div id="nd-cn-notice" style="display:none;font-size:11px;color:var(--green);margin-top:3px"></div>
+    </div>
+    <div class="form-row" id="nd-partner-box" style="display:none">
       <div class="field"><label>Parceiro Externo / Solicitante</label>
         <input class="input" id="nd-partner" placeholder="Ex: Empresa Parceira, Gateway X" value="${esc(opts.external_partner||'')}"></div>
       <div class="field"><label>E-mail do Parceiro</label>
@@ -625,6 +634,14 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
       <label for="nd-auto" style="margin:0">Gerar senha automaticamente</label></div>
   `, { footer: `<button class="btn" data-close>Cancelar</button>
                 <button class="btn btn-primary" id="nd-save">Criar demanda</button>` });
+
+  const updatePartnerBox = () => {
+    const isExt = $("#nd-ownership").value === 'externo';
+    $("#nd-partner-box").style.display = isExt ? 'flex' : 'none';
+  };
+  $("#nd-ownership").onchange = updatePartnerBox;
+  updatePartnerBox();
+
 
   const updateTicketField = () => {
     const env = $("#nd-env").value;
@@ -672,7 +689,9 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
         external_partner: $("#nd-partner").value,
         partner_email: $("#nd-partner-email").value,
         partner_registration: $("#nd-partner-reg").value,
+        ownership: $("#nd-ownership").value,
       }});
+
       // If created from monitor, flag the cert as em_renovacao
       if (opts.certId) {
         await api(`/monitor/certs/${opts.certId}/flag-renewal`, { method: "POST" }).catch(() => {});
@@ -783,14 +802,24 @@ function fillTemplate(content, r) {
 async function openReq(id, onDone) {
   const [r, tpls] = await Promise.all([api(`/reqs/${id}`), api("/templates")]);
   const isInstall = r.demand_type === 'instalacao';
+  const cert = (r.certificates && r.certificates[0]) || {};
+  const isPublic = r.ownership === 'externo' || r.ownership === 'publico' || (cert && (cert.ownership === 'externo' || cert.ownership === 'publico')) || Boolean(r.external_partner);
+
   modal(`${r.req_number} — ${r.cn}`, `
-    <div class="chips" style="margin-bottom:14px">${envBadge(r.env)} ${statusBadge(r.status)}
-      <span class="muted">criada em ${fmtDateTime(r.created_at)}</span></div>
+    <div class="chips" style="margin-bottom:14px">
+      ${envBadge(r.env)} ${statusBadge(r.status)} ${ownershipBadge(r.ownership || (isPublic ? 'externo' : 'interno'))}
+      <span class="muted">criada em ${fmtDateTime(r.created_at)}</span>
+    </div>
 
     <div class="form-row">
       <div class="field"><label>Status</label>
         <select class="input" id="d-status">${STATUSES.map(s =>
           `<option value="${s}" ${s === r.status ? "selected" : ""}>${STATUS_LABEL[s]}</option>`).join("")}</select></div>
+      <div class="field"><label>Propriedade / Tipo</label>
+        <select class="input" id="d-ownership">
+          <option value="interno" ${(r.ownership || 'interno') === 'interno' ? 'selected' : ''}>🔒 Privado (Interno)</option>
+          <option value="externo" ${r.ownership === 'externo' || isPublic ? 'selected' : ''}>🌐 Público (Externo)</option>
+        </select></div>
       <div class="field"><label>Senha</label>
         <div style="display:flex;gap:6px">
           <input class="input mono" id="d-pwd" type="password" value="${esc(r.password || "")}" readonly>
@@ -799,6 +828,7 @@ async function openReq(id, onDone) {
           <button class="btn btn-sm" id="d-pwd-regen" title="Regenerar">🎲</button>
         </div></div>
     </div>
+
     ${(cert.cert_category && cert.cert_category.includes('sepro')) || r.cn.includes('serpro') ? `
     <div class="panel mt" style="background:var(--accent-soft);border:1px solid var(--accent);padding:10px 14px">
       <div style="display:flex;align-items:center;justify-content:space-between">
@@ -813,20 +843,23 @@ async function openReq(id, onDone) {
         <textarea class="input" id="d-notes" rows="2">${esc(r.notes || "")}</textarea></div>
     </div>
 
-    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">
-      Parceiro Externo / Solicitante (para Certificados Públicos)
-    </h3>
-    <div class="form-row">
-      <div class="field"><label>Nome / Empresa Parceira</label>
-        <input class="input" id="d-partner" placeholder="Ex: Terceiro X, Gateway Y" value="${esc(r.external_partner || (cert && cert.external_partner) || '')}"></div>
-      <div class="field"><label>E-mail do Parceiro</label>
-        <input class="input" id="d-partner-email" placeholder="parceiro@empresa.com" value="${esc(r.partner_email || (cert && cert.partner_email) || '')}"></div>
-      <div class="field"><label>Matrícula / ID</label>
-        <input class="input mono" id="d-partner-reg" placeholder="MAT-12345" value="${esc(r.partner_registration || (cert && cert.partner_registration) || '')}"></div>
+    <div id="d-partner-section" style="${isPublic ? 'display:block' : 'display:none'}">
+      <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">
+        Parceiro Externo / Solicitante (para Certificados Públicos)
+      </h3>
+      <div class="form-row">
+        <div class="field"><label>Nome / Empresa Parceira</label>
+          <input class="input" id="d-partner" placeholder="Ex: Terceiro X, Gateway Y" value="${esc(r.external_partner || (cert && cert.external_partner) || '')}"></div>
+        <div class="field"><label>E-mail do Parceiro</label>
+          <input class="input" id="d-partner-email" placeholder="parceiro@empresa.com" value="${esc(r.partner_email || (cert && cert.partner_email) || '')}"></div>
+        <div class="field"><label>Matrícula / ID</label>
+          <input class="input mono" id="d-partner-reg" placeholder="MAT-12345" value="${esc(r.partner_registration || (cert && cert.partner_registration) || '')}"></div>
+      </div>
+      <div style="margin-top:6px">
+        <button class="btn btn-sm btn-ghost" id="d-notify-partner">📩 Notificar Parceiro via Template</button>
+      </div>
     </div>
-    <div style="margin-top:6px">
-      <button class="btn btn-sm btn-ghost" id="d-notify-partner">📩 Notificar Parceiro via Template</button>
-    </div>
+
 
     <div class="field mt"><label>Pasta da demanda</label>
       <div style="display:flex;gap:6px;align-items:center">
@@ -1028,17 +1061,27 @@ async function openReq(id, onDone) {
       }
     };
   }
+  if ($("#d-ownership")) {
+    $("#d-ownership").onchange = () => {
+      const isExt = $("#d-ownership").value === 'externo';
+      if ($("#d-partner-section")) {
+        $("#d-partner-section").style.display = isExt ? 'block' : 'none';
+      }
+    };
+  }
   $("#d-save").onclick = async () => {
     try {
       const newStatus = $("#d-status").value;
       await api(`/reqs/${id}`, { method: "PUT", json: {
         status: newStatus,
         notes: $("#d-notes").value,
+        ownership: $("#d-ownership") ? $("#d-ownership").value : undefined,
         external_partner: $("#d-partner") ? $("#d-partner").value : undefined,
         partner_email: $("#d-partner-email") ? $("#d-partner-email").value : undefined,
         partner_registration: $("#d-partner-reg") ? $("#d-partner-reg").value : undefined,
       }});
       closeModal(); toast("Demanda atualizada"); onDone && onDone();
+
 
       // Ao concluir geração/recebimento, avançar mesma REQ para instalação
       if (newStatus === 'concluida' && (r.demand_type === 'geracao' || r.demand_type === 'recebimento')) {

@@ -37,6 +37,7 @@ class ReqIn(BaseModel):
     external_partner: str = ""
     partner_email: str = ""
     partner_registration: str = ""
+    ownership: str = "interno"
 
 
 class ReqUpdate(BaseModel):
@@ -51,6 +52,8 @@ class ReqUpdate(BaseModel):
     external_partner: str | None = None
     partner_email: str | None = None
     partner_registration: str | None = None
+    ownership: str | None = None
+
 
 
 
@@ -133,11 +136,12 @@ def create_req(body: ReqIn):
 
         password = body.password or (_auto_password(conn) if body.auto_password else None)
         cur = conn.execute(
-            "INSERT INTO reqs (req_number, cn, env, password, notes, demand_type, parent_req_id, external_wo, external_crq, external_partner, partner_email, partner_registration) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO reqs (req_number, cn, env, password, notes, demand_type, parent_req_id, external_wo, external_crq, external_partner, partner_email, partner_registration, ownership) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (req_number, body.cn.strip(), body.env, password, body.notes,
-             body.demand_type, body.parent_req_id, body.external_wo, body.external_crq, body.external_partner, body.partner_email, body.partner_registration),
+             body.demand_type, body.parent_req_id, body.external_wo, body.external_crq, body.external_partner, body.partner_email, body.partner_registration, body.ownership),
         )
+
 
 
         req_id = cur.lastrowid
