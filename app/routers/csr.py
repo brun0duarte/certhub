@@ -2,15 +2,11 @@
 Inclui também o decoder de CSR e o repositório de CSRs decodificadas."""
 import json
 
-from cryptography import x509
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
-from cryptography.hazmat.primitives.serialization import Encoding
-from cryptography.x509.oid import ExtensionOID, NameOID
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..db import get_db, get_setting, log_activity
-from ..services import crypto, folders
+from ..services import crypto, decoder, folders
 from ..services.hsm.hsmutil import HsmUtilProvider
 
 router = APIRouter(tags=["csr"])
@@ -123,40 +119,12 @@ class CsrDecodeIn(BaseModel):
     pem: str
 
 
-def _decode_csr(pem: str) -> tuple[x509.CertificateSigningRequest, dict]:
-    data = pem.encode()
-    try:
-        csr = x509.load_pem_x509_csr(data)
-    except Exception:
-        try:
-            csr = x509.load_der_x509_csr(data)
-        except Exception:
-            raise HTTPException(400, "Não consegui ler a CSR — cole o PEM completo "
-                                     "(-----BEGIN CERTIFICATE REQUEST-----).")
-    cn_attrs = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-    sans = []
-    try:
-        ext = csr.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
-        sans = ext.value.get_values_for_type(x509.DNSName)
-    except x509.ExtensionNotFound:
-        pass
-    pub = csr.public_key()
-    if isinstance(pub, rsa.RSAPublicKey):
-        key_type = f"RSA {pub.key_size}"
-    elif isinstance(pub, ec.EllipticCurvePublicKey):
-        key_type = f"EC {pub.curve.name}"
-    else:
-        key_type = type(pub).__name__
-    info = {
-        "cn": cn_attrs[0].value if cn_attrs else csr.subject.rfc4514_string(),
-        "subject": csr.subject.rfc4514_string(),
-        "sans": ", ".join(sans),
-        "key_type": key_type,
-        "sig_algo": csr.signature_hash_algorithm.name if csr.signature_hash_algorithm else "—",
-        "signature_valid": csr.is_signature_valid,
-        "pem": csr.public_bytes(Encoding.PEM).decode(),
-    }
-    return csr, info
+def _decode_csr(pem: str):
+    csr = decoder.load_csr(pem.encode())
+    if csr is None:
+        raise HTTPException(400, "Não consegui ler a CSR — cole o PEM completo "
+                                 "(-----BEGIN CERTIFICATE REQUEST-----).")
+    return csr, decoder.decode_csr_fields(csr)
 
 
 @router.post("/csr/decode")
