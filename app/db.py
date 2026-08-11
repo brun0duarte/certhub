@@ -9,10 +9,11 @@ DB_PATH = DATA_DIR / "certhub.db"
 
 ENVS = ["PRD", "TQS", "HMP", "DES"]
 REQ_STATUSES = ["aberta", "csr_gerada", "cert_emitido", "instalado", "concluida", "cancelada"]
-DEMAND_TYPES = ['geracao', 'recebimento', 'revogacao', 'instalacao']
+DEMAND_TYPES = ['geracao', 'recebimento', 'revogacao', 'instalacao', 'renovacao', 'importacao']
 OWNERSHIP_TYPES = ['interno', 'externo']
 TASK_LANES = ["backlog", "a_fazer", "em_andamento", "concluido"]
 TASK_PRIORITIES = ["alta", "media", "baixa"]
+INSTALL_TASK_STATUSES = ["pendente", "em_andamento", "sucesso", "falha"]
 CERT_TYPES = ["servidor", "cliente_mtls", "ambos", "ca"]
 CERT_CATEGORIES = [
     "sectigo_dv", "sectigo_ov", "sectigo_ev",
@@ -25,9 +26,6 @@ INSTALL_LOCATIONS = [
     "tomcat", "outro",
 ]
 INSTALL_STATUSES = ['pendente', 'instalado', 'falhou']
-
-WO_TYPES = ['WO', 'CRQ']
-WO_STATUSES = ['aberta', 'em_andamento', 'concluida', 'cancelada']
 
 SCHEMA = """
 CREATE TABLE reqs (
@@ -398,12 +396,135 @@ def init_db():
                 pass
         version = 17
 
+    if version >= 17 and version < 18:
+        for stmt in ("DROP TABLE IF EXISTS wo_tasks", "DROP TABLE IF EXISTS work_orders"):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        for col_sql in [
+            "ALTER TABLE reqs DROP COLUMN assigned_to",
+            "ALTER TABLE reqs DROP COLUMN wo_number",
+            "ALTER TABLE activity_log DROP COLUMN user_id",
+            "ALTER TABLE users DROP COLUMN must_change_password",
+        ]:
+            try:
+                conn.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass
+        version = 18
+
+    if version >= 18 and version < 19:
+        for stmt in (
+            """CREATE TABLE IF NOT EXISTS checklist_task_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                instructions TEXT DEFAULT '',
+                position INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            )""",
+            """CREATE TABLE IF NOT EXISTS install_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                req_id INTEGER NOT NULL REFERENCES reqs(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                instructions TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pendente'
+                    CHECK (status IN ('pendente','em_andamento','concluido')),
+                notes TEXT DEFAULT '',
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            )""",
+            """CREATE TABLE IF NOT EXISTS install_task_evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES install_tasks(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                uploaded_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            )""",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        if not conn.execute("SELECT 1 FROM checklist_task_templates LIMIT 1").fetchone():
+            conn.executemany(
+                "INSERT INTO checklist_task_templates (title, instructions, position) VALUES (?,?,?)",
+                [
+                    ("Preparo",
+                     "Disponibilizar o arquivo .pfx/.p12 (com senha) para a equipe responsável pela ativação.",
+                     0),
+                    ("Ativação",
+                     "Realizar a ativação/instalação do certificado no ambiente de produção.",
+                     1),
+                    ("Teste",
+                     "Validar o funcionamento após a ativação (handshake TLS, cadeia completa, expiração).",
+                     2),
+                    ("Plano de retorno",
+                     "Plano de rollback caso a ativação apresente problema — reverter para o certificado anterior.",
+                     3),
+                ])
+        version = 19
+
+    if version >= 19 and version < 20:
+        try:
+            conn.execute("ALTER TABLE checklist_task_templates ADD COLUMN message_template TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        # status ganha sucesso/falha no lugar de concluido — precisa reconstruir a tabela
+        # pra trocar o CHECK constraint (SQLite não altera CHECK via ALTER TABLE).
+        try:
+            conn.execute("""CREATE TABLE install_tasks_v20 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                req_id INTEGER NOT NULL REFERENCES reqs(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                instructions TEXT DEFAULT '',
+                message_template TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pendente'
+                    CHECK (status IN ('pendente','em_andamento','sucesso','falha')),
+                notes TEXT DEFAULT '',
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            )""")
+            conn.execute("""
+                INSERT INTO install_tasks_v20
+                    (id, req_id, title, instructions, status, notes, position, created_at, updated_at)
+                SELECT id, req_id, title, instructions,
+                       CASE status WHEN 'concluido' THEN 'sucesso' ELSE status END,
+                       notes, position, created_at, updated_at
+                FROM install_tasks
+            """)
+            conn.execute("DROP TABLE install_tasks")
+            conn.execute("ALTER TABLE install_tasks_v20 RENAME TO install_tasks")
+        except sqlite3.OperationalError:
+            pass
+        default_msg_tpl = (
+            "📋 {tarefa} — {status}\n"
+            "Demanda: {req} · {cn} ({env})\n"
+            "Instruções: {instrucoes}\n"
+            "Notas: {notas}\n"
+            "Evidências: {evidencias}\n"
+            "Atualizado em {data}"
+        )
+        conn.execute(
+            "UPDATE checklist_task_templates SET message_template=? WHERE message_template IS NULL OR message_template=''",
+            (default_msg_tpl,))
+        # Tarefas já criadas antes da v20 não tinham message_template — preenche com o
+        # default (a migração de tabela acima não carrega esse campo, coluna é nova).
+        conn.execute(
+            "UPDATE install_tasks SET message_template=? WHERE message_template IS NULL OR message_template=''",
+            (default_msg_tpl,))
+        version = 20
+
     if version > 0:
         conn.execute(f"PRAGMA user_version = {version}")
         conn.commit()
 
-
-
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_certificates_thumbprint ON certificates(thumbprint_sha1)")
+    conn.commit()
 
     # Revisa e remove CHECK constraints legados na tabela certificates
     _fix_certificates_check_constraint(conn)

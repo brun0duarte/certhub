@@ -140,6 +140,7 @@ const LIFECYCLE_STATUS = {
   fim_de_vida: 'Fim de Vida',
   em_renovacao: 'Em Renovação',
 };
+const INSTALL_TASK_STATUS = { pendente: 'Pendente', em_andamento: 'Em andamento', sucesso: 'Sucesso', falha: 'Falha' };
 const OWNERSHIP_LABEL = { interno: 'Privado (Interno)', externo: 'Público (Externo)' };
 const ownershipBadge = o => {
   const isPub = o === 'externo' || o === 'publico';
@@ -565,7 +566,7 @@ views.instalacao = async () => {
       demand_type: 'instalacao',
     });
     const rows = await api("/reqs?" + params);
-    const shown = $("#i-status").value ? rows : rows.filter(r => r.status !== 'concluida' && r.status !== 'cancelada');
+    const shown = $("#i-status").value ? rows : rows.filter(r => !['concluida', 'cancelada', 'instalado'].includes(r.status));
 
     $("#i-table").innerHTML = shown.length ? `
       <table class="tbl"><thead><tr>
@@ -746,9 +747,9 @@ function fillTemplate(content, r) {
     demand_type: DEMAND_TYPES[r.demand_type] || r.demand_type || "",
 
     // ServiceNow Tickets (WO & CRQ)
-    wo: r.external_wo || r.wo_number || "",
-    external_wo: r.external_wo || r.wo_number || "",
-    work_order: r.external_wo || r.wo_number || "",
+    wo: r.external_wo || "",
+    external_wo: r.external_wo || "",
+    work_order: r.external_wo || "",
     crq: r.external_crq || "",
     external_crq: r.external_crq || "",
     mudanca: r.external_crq || r.external_wo || "",
@@ -802,9 +803,32 @@ function fillTemplate(content, r) {
       ? String(map[k]) : `[${k}?]`);
 }
 
+function fillTaskMessage(template, task, r) {
+  const map = {
+    tarefa: task.title || "",
+    status: INSTALL_TASK_STATUS[task.status] || task.status || "",
+    instrucoes: task.instructions || "",
+    notas: task.notes || "",
+    evidencias: (task.evidence && task.evidence.length)
+      ? task.evidence.map(e => e.filename).join(", ") : "nenhuma",
+    req: r.req_number || "",
+    cn: r.cn || "",
+    env: r.env || "",
+    data: fmtDate(new Date().toISOString()),
+  };
+  return template.replace(/\{(\w+)\}/g, (m, k) =>
+    map[k] !== undefined && map[k] !== null && String(map[k]).trim() !== ""
+      ? String(map[k]) : `[${k}?]`);
+}
+
 
 async function openReq(id, onDone) {
   const [r, tpls] = await Promise.all([api(`/reqs/${id}`), api("/templates")]);
+  let csrInfo = null;
+  if (r.csr_pem) {
+    try { csrInfo = await api("/csr/decode", { method: "POST", json: { pem: r.csr_pem } }); }
+    catch (_) { csrInfo = null; }
+  }
   const isInstall = r.demand_type === 'instalacao';
   const cert = (r.certificates && r.certificates[0]) || {};
   const isPublic = r.ownership === 'externo' || r.ownership === 'publico' || (cert && (cert.ownership === 'externo' || cert.ownership === 'publico')) || Boolean(r.external_partner);
@@ -817,7 +841,7 @@ async function openReq(id, onDone) {
 
     <div class="form-row">
       <div class="field"><label>Status</label>
-        <select class="input" id="d-status">${STATUSES.map(s =>
+        <select class="input" id="d-status">${STATUSES.filter(s => s !== "instalado" || isInstall).map(s =>
           `<option value="${s}" ${s === r.status ? "selected" : ""}>${STATUS_LABEL[s]}</option>`).join("")}</select></div>
       <div class="field"><label>Propriedade / Tipo</label>
         <select class="input" id="d-ownership">
@@ -907,24 +931,67 @@ async function openReq(id, onDone) {
     </div>
     <button class="btn btn-sm" id="l-add">＋ Adicionar local</button>
 
-    <div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 8px">
-      <h3 style="margin:0;font-size:13px;color:var(--text-dim);text-transform:uppercase">Certificado Emitido</h3>
-      <button class="btn btn-sm btn-primary" id="d-import-cert">📥 Importar Certificado (.cer / .pfx / .pem)</button>
+    <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">Certificado</h3>
+    <div class="tabs">
+      <button class="tab-btn active" type="button" data-tab="gerado">📝 Certificado Gerado</button>
+      <button class="tab-btn" type="button" data-tab="importado">📥 Certificado Importado</button>
     </div>
-    ${r.certificates.length ? `<table class="tbl"><tbody>${r.certificates.map(c => `
-      <tr>
-        <td><strong>${esc(c.cn)}</strong></td>
-        <td><span class="badge badge-lc-${esc(c.lifecycle_status || 'em_inventario')}">${esc(LIFECYCLE_STATUS[c.lifecycle_status] || c.lifecycle_status || 'em_inventario')}</span></td>
-        <td>Vence ${fmtDate(c.not_after)}</td>
-        <td class="mono muted">${esc((c.thumbprint_sha1 || "").slice(0, 16))}…</td>
-      </tr>`).join("")}</tbody></table>`
-      : `<div class="panel mt" style="background:var(--bg-sunken);padding:8px 12px;border-left:3px solid var(--amber);font-size:12px">
-          ⚠️ <strong>Certificado Pendente:</strong> Você precisa importar o certificado emitido (Arquivo .cer/.pfx ou Texto PEM) usando o botão acima para concluir esta demanda.
+    <div class="tab-panel" id="tab-gerado">
+      ${csrInfo ? `
+      <table class="tbl"><tbody>
+        <tr><th>CN</th><td>${esc(csrInfo.cn)}</td></tr>
+        <tr><th>Subject</th><td>${esc(csrInfo.subject)}</td></tr>
+        <tr><th>SANs</th><td>${esc(csrInfo.sans)}</td></tr>
+        <tr><th>Chave</th><td>${esc(csrInfo.key_type)}</td></tr>
+        <tr><th>Hash</th><td>${esc(csrInfo.sig_algo)}</td></tr>
+      </tbody></table>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:8px 0 4px">
+        <label class="muted" style="font-size:12px">CSR (PEM)</label>
+        <button class="btn btn-sm" id="d-csr-copy">📋 Copiar PEM</button>
+      </div>
+      <textarea class="input mono" id="d-csr-pem" rows="6" readonly>${esc(csrInfo.pem)}</textarea>`
+      : `<div class="panel mt" style="background:var(--bg-sunken);padding:8px 12px;border-left:3px solid var(--border);font-size:12px">
+          Nenhuma CSR gerada para esta demanda ainda.
          </div>`}
+    </div>
+    <div class="tab-panel" id="tab-importado" style="display:none">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+        <button class="btn btn-sm btn-primary" id="d-import-cert">📥 Importar Certificado (.cer / .pfx / .pem)</button>
+      </div>
+      ${r.certificates.length ? `
+      <div class="subtabs">
+        <button class="subtab-btn active" type="button" data-subtab="resumo">Resumo</button>
+        <button class="subtab-btn" type="button" data-subtab="dump">Dump completo</button>
+      </div>
+      ${r.certificates.map(c => `
+      <div class="panel mt" style="padding:12px 14px">
+        <div class="subtab-panel" data-subpanel="resumo">
+          <table class="tbl"><tbody>
+            <tr><th style="width:140px">CN</th><td><strong>${esc(c.cn)}</strong></td></tr>
+            <tr><th>Tipo</th><td>${certTypeBadge(c.cert_type)}</td></tr>
+            <tr><th>Lifecycle</th><td><span class="badge badge-lc-${esc(c.lifecycle_status || 'em_inventario')}">${esc(LIFECYCLE_STATUS[c.lifecycle_status] || c.lifecycle_status || 'em_inventario')}</span></td></tr>
+            <tr><th>SANs</th><td>${esc(c.sans || '—')}</td></tr>
+            <tr><th>Emissor</th><td>${esc(c.issuer_cn || c.issuer || '—')}</td></tr>
+            <tr><th>Validade</th><td>${fmtDate(c.not_before)} → ${fmtDate(c.not_after)}</td></tr>
+            <tr><th>Chave</th><td>${esc(c.key_type || '—')}</td></tr>
+            <tr><th>Thumbprint (SHA1)</th><td class="mono">${esc(c.thumbprint_sha1 || '—')}</td></tr>
+            <tr><th>Origem</th><td>${esc(c.source || '—')}</td></tr>
+          </tbody></table>
+        </div>
+        <div class="subtab-panel" data-subpanel="dump" style="display:none">
+          <table class="tbl"><tbody>${Object.entries(c).map(([k, v]) =>
+            `<tr><th style="width:180px">${esc(k)}</th><td class="mono" style="word-break:break-all">${
+              v === null || v === "" ? "—" : esc(String(v))}</td></tr>`).join("")}
+          </tbody></table>
+        </div>
+      </div>`).join("")}`
+        : `<div class="panel mt" style="background:var(--bg-sunken);padding:8px 12px;border-left:3px solid var(--amber);font-size:12px">
+            ⚠️ <strong>Certificado Pendente:</strong> Você precisa importar o certificado emitido (Arquivo .cer/.pfx ou Texto PEM) usando o botão acima para concluir esta demanda.
+           </div>`}
+    </div>
 
 
-    ${r.env === 'PRD' ? `
-      ${(r.certificates.length > 0 || ['cert_emitido','instalado','concluida'].includes(r.status) || r.external_crq || isInstall) ? `
+    ${isInstall ? (r.env === 'PRD' ? `
       <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">
         Ticket de Instalação em Produção
         <span class="badge badge-red" style="margin-left:8px;font-weight:normal">🔒 PRD — Mudança (CRQ)</span>
@@ -935,11 +1002,6 @@ async function openReq(id, onDone) {
         </div>
         <button class="btn" id="d-wo-save">Salvar CRQ</button>
       </div>` : `
-      <div class="panel mt" style="background:var(--bg-sunken);padding:10px 14px;border-left:3px solid var(--amber)">
-        <span class="muted">🔒 <strong>Ambiente PRD:</strong> O campo de Mudança (CRQ) estará disponível após a geração/emissão do certificado.</span>
-      </div>`}
-    ` : `
-      ${isInstall || r.external_wo ? `
       <h3 style="margin:16px 0 8px;font-size:13px;color:var(--text-dim);text-transform:uppercase">
         Work Order de Instalação
         <span class="badge badge-amber" style="margin-left:8px;font-weight:normal">🔧 ${r.env} — Work Order (WO)</span>
@@ -949,8 +1011,42 @@ async function openReq(id, onDone) {
           <input class="input mono" id="d-wo-ext" placeholder="WO0012345" value="${esc(r.external_wo || '')}">
         </div>
         <button class="btn" id="d-wo-save">Salvar WO</button>
-      </div>` : ''}
-    `}
+      </div>`) : ''}
+
+    ${isInstall && r.env === 'PRD' ? `
+    <div class="csr-subject-section mt">
+      <button class="section-toggle" id="d-checklist-toggle" type="button">
+        <span>✅ Checklist de Ativação (CRQ) — ${(r.install_tasks || []).length} tarefa(s)</span>
+        <span class="toggle-arrow" id="d-checklist-arrow">▾</span>
+      </button>
+      <div class="section-body" id="d-checklist-body">
+    <div id="d-checklist">${(r.install_tasks || []).map(t => `
+      <div class="panel mt" style="padding:10px 14px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div><strong>${esc(t.title)}</strong>
+            <div class="muted">${esc(t.instructions)}</div></div>
+          <select class="input" style="width:auto" data-task-status="${t.id}">
+            ${Object.entries(INSTALL_TASK_STATUS).map(([v, label]) =>
+              `<option value="${v}" ${v === t.status ? "selected" : ""}>${label}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field mt" style="margin-top:8px"><label style="font-size:11px">Notas</label>
+          <textarea class="input" rows="2" data-task-notes="${t.id}">${esc(t.notes || "")}</textarea>
+          <button class="btn btn-sm mt" data-task-save-notes="${t.id}">Salvar notas</button></div>
+        <div class="mt">
+          <label style="font-size:11px" class="muted">Evidências</label>
+          <div data-task-evidence="${t.id}">${t.evidence.length ? t.evidence.map(e => `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0">
+              <a href="/api/install-tasks/${t.id}/evidence/${e.id}" target="_blank" class="mono">📎 ${esc(e.filename)}</a>
+              <button class="btn btn-sm btn-danger" data-ev-del="${e.id}" data-ev-task="${t.id}">✕</button>
+            </div>`).join("") : `<div class="muted">Nenhuma evidência anexada.</div>`}</div>
+          <input type="file" data-task-file="${t.id}" style="margin-top:6px">
+        </div>
+        <button class="btn btn-sm mt" data-task-copy-msg="${t.id}">📋 Copiar mensagem</button>
+      </div>`).join("") || `<div class="muted">Nenhuma tarefa no checklist.</div>`}</div>
+      </div>
+    </div>
+    ` : ''}
 
 
     ${(r.past_reqs && r.past_reqs.length) ? `
@@ -987,6 +1083,18 @@ async function openReq(id, onDone) {
     $("#d-import-cert").onclick = () => {
       importCertModal(() => { openReq(id, onDone); }, id);
     };
+  }
+
+  $$(".tab-btn").forEach(btn => btn.onclick = () => {
+    $$(".tab-btn").forEach(b => b.classList.toggle("active", b === btn));
+    $$(".tab-panel").forEach(p => p.style.display = p.id === `tab-${btn.dataset.tab}` ? "block" : "none");
+  });
+  $$(".subtab-btn").forEach(btn => btn.onclick = () => {
+    $$(".subtab-btn").forEach(b => b.classList.toggle("active", b === btn));
+    $$(".subtab-panel").forEach(p => p.style.display = p.dataset.subpanel === btn.dataset.subtab ? "block" : "none");
+  });
+  if ($("#d-csr-copy")) {
+    $("#d-csr-copy").onclick = () => copyText($("#d-csr-pem").value, "PEM copiado!");
   }
 
 
@@ -1106,14 +1214,12 @@ async function openReq(id, onDone) {
       }});
       closeModal(); toast("Demanda atualizada"); onDone && onDone();
 
-
-      // Ao concluir geração/recebimento/renovação, avançar mesma REQ para instalação
+      // Ao concluir geração/recebimento/renovação, avançar a mesma REQ para fase de instalação
       if (newStatus === 'concluida' && (r.demand_type === 'geracao' || r.demand_type === 'recebimento' || r.demand_type === 'renovacao')) {
         try {
-          await api(`/reqs/${id}/advance-to-installation`, { method: "POST" });
-          toast(`✅ ${r.req_number} avançou para Instalação!`);
-          if (onDone) onDone();
-          location.hash = '#/instalacao';
+          const inst = await api(`/reqs/${id}/advance-to-installation`, { method: "POST" });
+          toast(`✅ ${inst.req_number} avançou para Instalação!`);
+          onDone && onDone();
         } catch (e) { toast(e.message, 'err'); }
       }
     } catch (e) { toast(e.message, "err"); }
@@ -1131,6 +1237,57 @@ async function openReq(id, onDone) {
       } catch (e) { toast(e.message, "err"); }
     };
   }
+
+  $$("[data-task-status]").forEach(el => el.onchange = async () => {
+    try {
+      await api(`/install-tasks/${el.dataset.taskStatus}`, { method: "PUT", json: { status: el.value } });
+      const task = (r.install_tasks || []).find(t => t.id === +el.dataset.taskStatus);
+      if (task) task.status = el.value;
+      toast("Status da tarefa atualizado");
+    } catch (e) { toast(e.message, "err"); }
+  });
+  $$("[data-task-copy-msg]").forEach(el => el.onclick = () => {
+    const task = (r.install_tasks || []).find(t => t.id === +el.dataset.taskCopyMsg);
+    if (!task) return;
+    copyText(fillTaskMessage(task.message_template || "", task, r), "Mensagem copiada!");
+  });
+  if ($("#d-checklist-toggle")) {
+    $("#d-checklist-toggle").onclick = () => {
+      const body = $("#d-checklist-body");
+      const arrow = $("#d-checklist-arrow");
+      const isOpen = body.style.display !== "none";
+      body.style.display = isOpen ? "none" : "";
+      arrow.textContent = isOpen ? "▸" : "▾";
+    };
+  }
+  $$("[data-task-save-notes]").forEach(el => el.onclick = async () => {
+    const taskId = el.dataset.taskSaveNotes;
+    const notesVal = $(`[data-task-notes="${taskId}"]`).value;
+    try {
+      await api(`/install-tasks/${taskId}`, { method: "PUT", json: { notes: notesVal } });
+      const task = (r.install_tasks || []).find(t => t.id === +taskId);
+      if (task) task.notes = notesVal;
+      toast("Notas salvas");
+    } catch (e) { toast(e.message, "err"); }
+  });
+  $$("[data-task-file]").forEach(el => el.onchange = async () => {
+    const taskId = el.dataset.taskFile;
+    const file = el.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      await api(`/install-tasks/${taskId}/evidence`, { method: "POST", body: fd });
+      toast("Evidência anexada"); openReq(id, onDone);
+    } catch (e) { toast(e.message, "err"); }
+  });
+  $$("[data-ev-del]").forEach(el => el.onclick = async () => {
+    if (!confirm("Remover esta evidência?")) return;
+    try {
+      await api(`/install-tasks/${el.dataset.evTask}/evidence/${el.dataset.evDel}`, { method: "DELETE" });
+      toast("Evidência removida"); openReq(id, onDone);
+    } catch (e) { toast(e.message, "err"); }
+  });
 
 
   $("#d-delete").onclick = async () => {
@@ -1287,22 +1444,25 @@ views.csr = async () => {
 
 
 
-/* ---------------- CSR Decoder ---------------- */
-views.csrdecoder = async () => {
+/* ---------------- Decoder geral ---------------- */
+views.decoder = async () => {
   const reqs = await api("/reqs");
   let decoded = null;
   main.innerHTML = `
     <div class="view-header"><div>
-      <div class="view-title">CSR Decoder</div>
-      <div class="view-sub">Decodifique uma CSR e guarde no repositório para consulta</div>
+      <div class="view-title">Decoder</div>
+      <div class="view-sub">Cole ou envie um certificado, CSR, chave privada ou PFX — o tipo é detectado automaticamente</div>
     </div></div>
     <div class="grid grid-2">
       <div class="panel">
-        <div class="field"><label>Arquivo .csr / .pem (opcional — preenche o campo abaixo)</label>
-          <input class="input" type="file" id="dc-file" accept=".csr,.pem,.req,.txt"></div>
-        <div class="field"><label>CSR em PEM</label>
+        <div class="field"><label>Arquivo (.csr / .pem / .crt / .cer / .der / .key / .pfx / .p12)</label>
+          <input class="input" type="file" id="dc-file"></div>
+        <div class="field"><label>Ou cole o conteúdo em PEM</label>
           <textarea class="input mono" id="dc-pem" rows="11"
-            placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea></div>
+            placeholder="-----BEGIN CERTIFICATE-----"></textarea></div>
+        <div class="field" id="dc-pwd-box" style="display:none">
+          <label>Senha (PFX / chave criptografada)</label>
+          <input class="input" type="password" id="dc-pwd"></div>
         <button class="btn btn-primary" id="dc-go">🔍 Decodificar</button>
         <div id="dc-result" class="mt"></div>
       </div>
@@ -1338,39 +1498,91 @@ views.csrdecoder = async () => {
     });
   }
 
+  const row = (k, v, mono) => `<tr><th style="width:120px">${k}</th>
+    <td class="${mono ? "mono" : ""}">${esc(v || "—")}</td></tr>`;
+
   $("#dc-file").onchange = async () => {
     const f = $("#dc-file").files[0];
-    if (f) $("#dc-pem").value = await f.text();
+    if (f && /\.(pem|csr|crt|cer|key|txt|req)$/i.test(f.name)) $("#dc-pem").value = await f.text();
   };
+
   $("#dc-go").onclick = async () => {
+    const file = $("#dc-file").files[0];
+    const pem = $("#dc-pem").value.trim();
+    const password = $("#dc-pwd").value;
+    const form = new FormData();
+    if (pem) form.append("pem_text", pem);
+    else if (file) form.append("file", file);
+    else return toast("Envie um arquivo ou cole o conteúdo", "err");
+    if (password) form.append("password", password);
+
     try {
-      decoded = await api("/csr/decode", { method: "POST", json: { pem: $("#dc-pem").value } });
+      decoded = await api("/decode", { method: "POST", body: form });
     } catch (e) { decoded = null; $("#dc-result").innerHTML = ""; return toast(e.message, "err"); }
-    const row = (k, v, mono) => `<tr><th style="width:120px">${k}</th>
-      <td class="${mono ? "mono" : ""}">${esc(v || "—")}</td></tr>`;
-    $("#dc-result").innerHTML = `
-      <table class="tbl">
-        ${row("CN", decoded.cn)}${row("Subject", decoded.subject, 1)}
-        ${row("SANs", decoded.sans)}${row("Chave", decoded.key_type)}
-        ${row("Hash", decoded.sig_algo)}
-        <tr><th>Assinatura</th><td><span class="badge badge-days-${decoded.signature_valid ? "ok" : "danger"}">
-          ${decoded.signature_valid ? "válida ✓" : "INVÁLIDA ✗"}</span></td></tr>
-      </table>
-      <div class="form-row mt">
-        <div class="field" style="margin:0"><select class="input" id="dc-req">
-          <option value="">— sem demanda —</option>
-          ${reqs.map(r => `<option value="${r.id}">${esc(r.req_number)} · ${esc(r.cn)} (${r.env})</option>`).join("")}
-        </select></div>
-        <button class="btn btn-primary" id="dc-save">＋ Adicionar ao repositório</button>
-      </div>`;
-    $("#dc-save").onclick = async () => {
-      try {
-        await api("/csrs", { method: "POST", json: {
-          pem: decoded.pem, req_id: $("#dc-req").value ? +$("#dc-req").value : null,
-        }});
-        toast("CSR adicionada ao repositório"); loadList();
-      } catch (e) { toast(e.message, "err"); }
-    };
+
+    if (decoded.type === "needs_password") {
+      $("#dc-pwd-box").style.display = "block";
+      $("#dc-result").innerHTML = "";
+      return toast(decoded.hint === "pfx" ? "Informe a senha do PFX" : "Chave criptografada — informe a senha", "err");
+    }
+
+    if (decoded.type === "csr") {
+      $("#dc-result").innerHTML = `
+        <table class="tbl">
+          ${row("Tipo", "CSR")}${row("CN", decoded.cn)}${row("Subject", decoded.subject, 1)}
+          ${row("SANs", decoded.sans)}${row("Chave", decoded.key_type)}
+          ${row("Hash", decoded.sig_algo)}
+          <tr><th>Assinatura</th><td><span class="badge badge-days-${decoded.signature_valid ? "ok" : "danger"}">
+            ${decoded.signature_valid ? "válida ✓" : "INVÁLIDA ✗"}</span></td></tr>
+        </table>
+        <div class="form-row mt">
+          <div class="field" style="margin:0"><select class="input" id="dc-req">
+            <option value="">— sem demanda —</option>
+            ${reqs.map(r => `<option value="${r.id}">${esc(r.req_number)} · ${esc(r.cn)} (${r.env})</option>`).join("")}
+          </select></div>
+          <button class="btn btn-primary" id="dc-save">＋ Adicionar ao repositório</button>
+        </div>`;
+      $("#dc-save").onclick = async () => {
+        try {
+          await api("/csrs", { method: "POST", json: {
+            pem: decoded.pem, req_id: $("#dc-req").value ? +$("#dc-req").value : null,
+          }});
+          toast("CSR adicionada ao repositório"); loadList();
+        } catch (e) { toast(e.message, "err"); }
+      };
+      return;
+    }
+
+    if (decoded.type === "cert") {
+      $("#dc-result").innerHTML = `<table class="tbl">
+        ${row("Tipo", "Certificado")}${row("CN", decoded.cn)}${row("Subject", decoded.subject, 1)}
+        ${row("Emissor", decoded.issuer, 1)}${row("SANs", decoded.sans)}
+        ${row("Categoria", CERT_TYPE_LABEL[decoded.cert_type] || decoded.cert_type)}
+        ${row("Serial", decoded.serial, 1)}${row("Thumbprint SHA1", decoded.thumbprint_sha1, 1)}
+        ${row("Válido de", decoded.not_before)}${row("Válido até", decoded.not_after)}
+        ${row("Chave", decoded.key_type)}
+      </table>`;
+      return;
+    }
+
+    if (decoded.type === "key") {
+      $("#dc-result").innerHTML = `<table class="tbl">
+        ${row("Tipo", "Chave privada")}${row("Chave", decoded.key_type)}
+        ${row("Criptografada", decoded.encrypted ? "Sim" : "Não")}
+      </table>`;
+      return;
+    }
+
+    if (decoded.type === "pfx") {
+      $("#dc-result").innerHTML = `<table class="tbl">
+        ${row("Tipo", "PFX / PKCS12")}
+        ${row("Contém chave privada", decoded.has_key ? "Sim" : "Não")}
+        ${row("Certificados extras na cadeia", decoded.extra_certs)}
+        ${decoded.cert ? row("CN do certificado", decoded.cert.cn) : ""}
+        ${decoded.cert ? row("Emissor", decoded.cert.issuer, 1) : ""}
+      </table>`;
+      return;
+    }
   };
   await loadList();
 };
@@ -1515,10 +1727,17 @@ function certDetail(c, onDone) {
         </select></div>
       <button class="btn" id="cd-save-type" style="align-self:flex-end">Salvar tipo</button>
       <button class="btn" id="cd-copy-thumb" style="align-self:flex-end">📋 Thumbprint</button>
+      <button class="btn" id="cd-copy-pem" style="align-self:flex-end">📋 Copiar PEM</button>
       <button class="btn" id="cd-history" style="align-self:flex-end">📜 Histórico</button>
     </div>
   `, { large: true });
   $("#cd-copy-thumb").onclick = () => copyText(c.thumbprint_sha1 || "", "Thumbprint copiado!");
+  $("#cd-copy-pem").onclick = async () => {
+    try {
+      const { pem } = await api(`/certs/${c.id}/pem`);
+      copyText(pem, "PEM copiado!");
+    } catch (e) { toast(e.message, "err"); }
+  };
   $("#cd-save-type").onclick = async () => {
     await api(`/certs/${c.id}`, { method: "PUT", json: { cert_type: $("#cd-type").value } });
     closeModal(); toast("Tipo atualizado"); onDone && onDone();
@@ -1830,6 +2049,15 @@ views.settings = async () => {
         <code>{locais}</code> <code>{notas}</code> <code>{data}</code></div>
       <div id="tpl-list"></div>
       <button class="btn btn-sm mt" id="tpl-new">＋ Novo template</button>
+    </div>
+
+    <div class="panel">
+      <h3>Checklist de Ativação (CRQ)</h3>
+      <div class="muted" style="margin-bottom:10px">
+        Tarefas padrão criadas automaticamente em toda demanda de instalação em PRD (mudança/CRQ).
+        A ordem aqui define a ordem exibida na demanda.</div>
+      <div id="ck-list"></div>
+      <button class="btn btn-sm mt" id="ck-new">＋ Nova tarefa padrão</button>
     </div>`;
 
   async function loadTpls() {
@@ -1871,6 +2099,69 @@ views.settings = async () => {
 
   $("#tpl-new").onclick = () => tplModal(null, loadTpls);
   await loadTpls();
+
+  async function loadChecklist() {
+    const tpls = await api("/checklist-templates");
+    $("#ck-list").innerHTML = tpls.length ? tpls.map(t => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
+        <div>
+          <span class="mono muted">#${t.position}</span> <strong>${esc(t.title)}</strong>
+          ${!t.active ? '<span class="badge badge-days-danger" style="margin-left:6px">inativa</span>' : ''}
+          <div class="muted">${esc(t.instructions)}</div>
+        </div>
+        <span style="white-space:nowrap"><button class="btn btn-sm" data-ck-edit="${t.id}">✏️ Editar</button>
+        <button class="btn btn-sm btn-danger" data-ck-del="${t.id}">✕</button></span>
+      </div>`).join("") : `<div class="muted">Nenhuma tarefa padrão cadastrada.</div>`;
+    $$("[data-ck-edit]").forEach(el => el.onclick = () =>
+      checklistTplModal(tpls.find(t => t.id === +el.dataset.ckEdit), loadChecklist));
+    $$("[data-ck-del]").forEach(el => el.onclick = async () => {
+      const t = tpls.find(x => x.id === +el.dataset.ckDel);
+      if (!confirm(`Excluir a tarefa padrão "${t.title}"?`)) return;
+      await api(`/checklist-templates/${t.id}`, { method: "DELETE" });
+      toast("Tarefa padrão excluída"); loadChecklist();
+    });
+  }
+
+  const DEFAULT_MESSAGE_TEMPLATE = "📋 {tarefa} — {status}\nDemanda: {req} · {cn} ({env})\n"
+    + "Instruções: {instrucoes}\nNotas: {notas}\nEvidências: {evidencias}\nAtualizado em {data}";
+
+  function checklistTplModal(t, onDone) {
+    modal(t ? "Editar tarefa padrão" : "Nova tarefa padrão", `
+      <div class="form-row">
+        <div class="field"><label>Título</label>
+          <input class="input" id="ck-title" value="${t ? esc(t.title) : ""}"></div>
+        <div class="field" style="max-width:110px"><label>Ordem</label>
+          <input class="input" type="number" id="ck-position" value="${t ? t.position : 0}"></div>
+      </div>
+      <div class="field"><label>Instruções</label>
+        <textarea class="input" id="ck-instructions" rows="4">${t ? esc(t.instructions) : ""}</textarea></div>
+      <div class="field"><label>Mensagem (template para copiar/colar no ticket)</label>
+        <div class="muted" style="margin-bottom:4px">Placeholders: <code>{tarefa}</code> <code>{status}</code>
+          <code>{req}</code> <code>{cn}</code> <code>{env}</code> <code>{instrucoes}</code>
+          <code>{notas}</code> <code>{evidencias}</code> <code>{data}</code></div>
+        <textarea class="input mono" id="ck-message" rows="6">${esc((t ? t.message_template : "") || DEFAULT_MESSAGE_TEMPLATE)}</textarea></div>
+      <div class="checkbox-row"><input type="checkbox" id="ck-active" ${!t || t.active ? "checked" : ""}>
+        <label for="ck-active" style="margin:0">Ativa (entra no checklist de novas instalações)</label></div>
+    `, { large: true, footer: `<button class="btn" data-close>Cancelar</button>
+        <button class="btn btn-primary" id="ck-save">Salvar</button>` });
+    $("#ck-save").onclick = async () => {
+      const body = {
+        title: $("#ck-title").value,
+        instructions: $("#ck-instructions").value,
+        message_template: $("#ck-message").value,
+        position: +$("#ck-position").value || 0,
+        active: $("#ck-active").checked,
+      };
+      try {
+        if (t) await api(`/checklist-templates/${t.id}`, { method: "PUT", json: body });
+        else await api("/checklist-templates", { method: "POST", json: body });
+        closeModal(); toast("Tarefa padrão salva"); onDone && onDone();
+      } catch (e) { toast(e.message, "err"); }
+    };
+  }
+
+  $("#ck-new").onclick = () => checklistTplModal(null, loadChecklist);
+  await loadChecklist();
 
   $("#s-save").onclick = async () => {
     try {

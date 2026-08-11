@@ -1,6 +1,7 @@
 """Demandas (REQ): CRUD, status, locais de instalação, pastas e histórico."""
 import json
 import re
+import sqlite3
 from contextlib import contextmanager
 
 from fastapi import APIRouter, HTTPException
@@ -21,6 +22,20 @@ def db_conn():
         yield conn
     finally:
         conn.close()
+
+
+def find_existing_active_req(conn, cn: str, env: str, demand_type: str) -> dict | None:
+    """Demanda ativa (não concluída/cancelada) com mesmo CN+ambiente+tipo, se houver."""
+    row = conn.execute(
+        "SELECT id, req_number, cn, env, status, demand_type FROM reqs "
+        "WHERE cn=? AND env=? AND demand_type=? AND status NOT IN ('concluida','cancelada')",
+        (cn, env, demand_type)
+    ).fetchone()
+    if row is None:
+        return None
+    if isinstance(row, sqlite3.Row):
+        return dict(row)
+    return dict(zip(("id", "req_number", "cn", "env", "status", "demand_type"), row))
 
 
 class ReqIn(BaseModel):
@@ -100,18 +115,35 @@ def list_reqs(search: str = "", env: str = "", status: str = "", demand_type: st
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
+def _seed_install_tasks(conn, req_id: int):
+    """Clona o checklist de tarefas ativo pra essa demanda de instalação em PRD (mudança/CRQ)."""
+    if conn.execute("SELECT 1 FROM install_tasks WHERE req_id=?", (req_id,)).fetchone():
+        return
+    templates = conn.execute(
+        "SELECT title, instructions, message_template, position FROM checklist_task_templates "
+        "WHERE active=1 ORDER BY position, id").fetchall()
+    for t in templates:
+        conn.execute(
+            "INSERT INTO install_tasks (req_id, title, instructions, message_template, position) "
+            "VALUES (?,?,?,?,?)",
+            (req_id, t["title"], t["instructions"], t["message_template"], t["position"]))
+
+
+def _next_req_number(conn) -> str:
+    row = conn.execute(
+        "SELECT req_number FROM reqs WHERE req_number LIKE 'REQ%' "
+        "ORDER BY CAST(SUBSTR(req_number, 4) AS INTEGER) DESC LIMIT 1"
+    ).fetchone()
+    next_num = int(row[0][3:]) + 1 if row else 1
+    return f"REQ{next_num:07d}"
+
+
 @router.post("/reqs")
 def create_req(body: ReqIn):
     with db_conn() as conn:
         # Auto-generate REQ number if not provided
         if not body.req_number:
-            cur = conn.execute(
-                "SELECT req_number FROM reqs WHERE req_number LIKE 'REQ%' "
-                "ORDER BY CAST(SUBSTR(req_number, 4) AS INTEGER) DESC LIMIT 1"
-            )
-            row = cur.fetchone()
-            next_num = int(row[0][3:]) + 1 if row else 1
-            req_number = f"REQ{next_num:07d}"
+            req_number = _next_req_number(conn)
         else:
             req_number = body.req_number.strip().upper()
             if not REQ_FORMAT.match(req_number):
@@ -119,14 +151,10 @@ def create_req(body: ReqIn):
 
         # Block duplicate active demands for geracao/recebimento
         if body.demand_type in ('geracao', 'recebimento'):
-            dup = conn.execute(
-                "SELECT req_number FROM reqs WHERE cn=? AND env=? AND demand_type=? "
-                "AND status NOT IN ('concluida','cancelada')",
-                (body.cn.strip(), body.env, body.demand_type)
-            ).fetchone()
+            dup = find_existing_active_req(conn, body.cn.strip(), body.env, body.demand_type)
             if dup:
                 raise HTTPException(409,
-                    f"Já existe demanda ativa ({dup[0]}) para este CN/ambiente. "
+                    f"Já existe demanda ativa ({dup['req_number']}) para este CN/ambiente. "
                     f"Conclua ou cancele a anterior antes de criar nova.")
 
         # Check for duplicate req_number
@@ -148,6 +176,8 @@ def create_req(body: ReqIn):
         log_activity(conn, "req_criada", f"{req_number} · CN {body.cn} · {body.env}", req_id)
         if password and body.auto_password and not body.password:
             log_activity(conn, "senha_gerada", "Senha gerada automaticamente na criação", req_id)
+        if body.demand_type == 'instalacao' and body.env == 'PRD':
+            _seed_install_tasks(conn, req_id)
         conn.commit()
         return dict(conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone())
 
@@ -176,9 +206,6 @@ def get_req(req_id: int):
             "SELECT * FROM install_locations WHERE req_id=? ORDER BY id", (req_id,))]
         certs = [dict(r) for r in conn.execute(
             "SELECT * FROM certificates WHERE req_id=? ORDER BY created_at DESC", (req_id,))]
-        if not certs and req.get("cn"):
-            certs = [dict(r) for r in conn.execute(
-                "SELECT * FROM certificates WHERE cn=? OR sans LIKE ? ORDER BY created_at DESC", (req["cn"], f"%{req['cn']}%"))]
         if not certs:
             certs = [dict(r) for r in conn.execute(
                 """SELECT c.* FROM certificates c
@@ -193,6 +220,13 @@ def get_req(req_id: int):
             req["issuer_cn"] = c.get("issuer_cn") or c.get("issuer") or ""
             req["emissor"] = c.get("issuer_cn") or c.get("issuer") or ""
 
+
+        tasks = [dict(r) for r in conn.execute(
+            "SELECT * FROM install_tasks WHERE req_id=? ORDER BY position, id", (req_id,))]
+        for t in tasks:
+            t["evidence"] = [dict(r) for r in conn.execute(
+                "SELECT * FROM install_task_evidence WHERE task_id=? ORDER BY id", (t["id"],))]
+        req["install_tasks"] = tasks
 
         req["activity"] = [dict(r) for r in conn.execute(
             "SELECT * FROM activity_log WHERE req_id=? ORDER BY id DESC LIMIT 50", (req_id,))]
@@ -255,6 +289,12 @@ def update_req(req_id: int, body: ReqUpdate):
         fields = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
         if "status" in fields and fields["status"] not in REQ_STATUSES:
             raise HTTPException(400, f"Status inválido. Use: {', '.join(REQ_STATUSES)}")
+        if "status" in fields and fields["status"] == "instalado":
+            demand_type = fields.get("demand_type", row["demand_type"])
+            if demand_type != "instalacao":
+                raise HTTPException(400,
+                    "🔒 Status 'Instalado' só se aplica a demandas de instalação — "
+                    "conclua a geração/recebimento primeiro para avançar para instalação.")
         if "status" in fields and fields["status"] == "concluida":
             demand_type = row["demand_type"] if "demand_type" in row.keys() else "geracao"
             if demand_type in ("geracao", "recebimento", "renovacao"):
@@ -288,13 +328,17 @@ def delete_req(req_id: int):
 
 @router.post("/reqs/{req_id}/advance-to-installation")
 def advance_to_installation(req_id: int):
-    """Avança REQ de geração/recebimento para fase de instalação."""
+    """Avança a MESMA demanda de geração/recebimento/renovação concluída para a fase
+    de instalação (demand_type='instalacao'). Não cria uma REQ nova — é a mesma REQ
+    seguindo para a próxima fase do ciclo de vida."""
     with db_conn() as conn:
         row = conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Demanda não encontrada")
         if row['demand_type'] not in ('geracao', 'recebimento', 'renovacao'):
             raise HTTPException(400, "Só demandas de geração/recebimento/renovação podem avançar para instalação")
+        if row['status'] != 'concluida':
+            raise HTTPException(400, "A demanda precisa estar concluída antes de avançar para instalação")
         conn.execute("""
             UPDATE reqs SET demand_type='instalacao', status='aberta',
                            updated_at=datetime('now','localtime')
@@ -302,6 +346,8 @@ def advance_to_installation(req_id: int):
         """, (req_id,))
         log_activity(conn, "avancou_instalacao",
                      f"Demanda {row['req_number']} avançou para fase de instalação", req_id)
+        if row['env'] == 'PRD':
+            _seed_install_tasks(conn, req_id)
         conn.commit()
         return dict(conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone())
 
@@ -433,7 +479,7 @@ def recent_activity(limit: int = 30):
 
 
 FLOWS: dict[str, str] = {
-    "emissao": """\
+    "geracao": """\
 flowchart TD
     A([🟢 Abertura da demanda]) --> B[Coletar informações<br/>CN, SANs, ambiente, solicitante]
     B --> C[Gerar CSR<br/>Aba **Gerar CSR** → engine local / certreq / HSM]
