@@ -22,6 +22,16 @@ def parse_certificate(data: bytes, filename: str = "", password: str | None = No
     return _extract(cert)
 
 
+def _serial_hex(n: int) -> str:
+    """Hex em complemento de dois, igual ao que openssl x509 -serial mostra."""
+    length = 1
+    while True:
+        try:
+            return n.to_bytes(length, "big", signed=True).hex().upper()
+        except OverflowError:
+            length += 1
+
+
 def _load_x509(data: bytes) -> x509.Certificate:
     try:
         return x509.load_pem_x509_certificate(data)
@@ -93,7 +103,7 @@ def _extract(cert: x509.Certificate) -> dict:
         "issuer_cn": _cn(cert.issuer),
         "cert_type": cert_type,
         "sans": ", ".join(dict.fromkeys(sans)),
-        "serial": format(abs(cert.serial_number), "x").upper() if cert.serial_number else "",
+        "serial": _serial_hex(cert.serial_number),
 
         "thumbprint_sha1": cert.fingerprint(hashes.SHA1()).hex().upper(),
         "not_before": not_before_dt.strftime("%Y-%m-%d %H:%M:%S") if not_before_dt else "",

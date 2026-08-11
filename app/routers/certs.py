@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import pkcs12
 from ..db import CERT_TYPES, get_db, get_setting, log_activity, LIFECYCLE_STATUSES
 from ..services import certparse, folders
 
@@ -120,9 +121,7 @@ async def import_cert(file: UploadFile | None = File(None),
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-
     conn = get_db()
-    file_path = ""
     req = None
     if req_id:
         req = conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone()
@@ -130,34 +129,65 @@ async def import_cert(file: UploadFile | None = File(None),
             conn.close()
             raise HTTPException(404, "Demanda não encontrada")
 
-    # salva o arquivo: na pasta cert/ da REQ, ou em data/files/certs/
-    base = get_setting(conn, "base_dir")
-    if req:
-        template = get_setting(conn, "folder_template")
-        folder = folders.create_structure(base, template, req["req_number"], req["cn"], req["env"]) / "cert"
+    existing = conn.execute(
+        "SELECT * FROM certificates WHERE thumbprint_sha1=?", (info["thumbprint_sha1"],)
+    ).fetchone()
+
+    if existing:
+        cert_id = existing["id"]
+        already_imported = True
+        if req_id and existing["req_id"] != req_id:
+            conn.execute("UPDATE certificates SET req_id=? WHERE id=?", (req_id, cert_id))
     else:
-        folder = Path(base) / "certs"
-        folder.mkdir(parents=True, exist_ok=True)
-    safe_name = folders.sanitize(Path(filename or "certificado.crt").name)
-
-    dest = folder / safe_name
-    dest.write_bytes(data)
-    file_path = str(dest)
-
-    now = datetime.now()
-    try:
-        not_after_dt = datetime.fromisoformat(info['not_after'].replace('Z', '+00:00'))
-        if not_after_dt.replace(tzinfo=None) < now:
-            lifecycle = 'fim_de_vida'
+        already_imported = False
+        # salva o arquivo: na pasta cert/ da REQ, ou em data/files/certs/
+        base = get_setting(conn, "base_dir")
+        if req:
+            template = get_setting(conn, "folder_template")
+            folder = folders.create_structure(base, template, req["req_number"], req["cn"], req["env"]) / "cert"
         else:
+            folder = Path(base) / "certs"
+            folder.mkdir(parents=True, exist_ok=True)
+        safe_name = folders.sanitize(Path(filename or "certificado.crt").name)
+
+        dest = folder / safe_name
+        dest.write_bytes(data)
+        file_path = str(dest)
+
+        now = datetime.now()
+        try:
+            not_after_dt = datetime.fromisoformat(info['not_after'].replace('Z', '+00:00'))
+            if not_after_dt.replace(tzinfo=None) < now:
+                lifecycle = 'fim_de_vida'
+            else:
+                lifecycle = 'em_inventario'
+        except Exception:
             lifecycle = 'em_inventario'
-    except Exception:
-        lifecycle = 'em_inventario'
-        
-    if lifecycle != 'fim_de_vida' and req_id:
-        has_install = conn.execute("SELECT 1 FROM install_locations WHERE req_id=?", (req_id,)).fetchone()
-        if has_install:
-            lifecycle = 'instalado'
+
+        if lifecycle != 'fim_de_vida' and req_id:
+            has_install = conn.execute("SELECT 1 FROM install_locations WHERE req_id=?", (req_id,)).fetchone()
+            if has_install:
+                lifecycle = 'instalado'
+
+        cur = conn.execute(
+            """INSERT INTO certificates
+               (req_id, cn, sans, subject, issuer, issuer_cn, cert_type, serial,
+                thumbprint_sha1, not_before, not_after, key_type, source, file_path, lifecycle_status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (req_id, info["cn"], info["sans"], info["subject"], info["issuer"],
+             info["issuer_cn"], info["cert_type"], info["serial"],
+             info["thumbprint_sha1"], info["not_before"],
+             info["not_after"], info["key_type"], "importado", file_path, lifecycle),
+        )
+        cert_id = cur.lastrowid
+        _link_parent(conn, cert_id, info["issuer"], info["subject"])
+
+    log_activity(conn, "cert_relinkado" if already_imported else "cert_importado",
+                 f"{info['cn']} · vence {info['not_after'][:10]}", req_id)
+    if req:
+        conn.execute("UPDATE reqs SET status='cert_emitido', "
+                     "updated_at=datetime('now','localtime') WHERE id=? AND status IN ('aberta','csr_gerada')",
+                     (req_id,))
 
     # Verifica se a cadeia do emissor (CA) já está cadastrada no sistema
     issuer_dn = info.get("issuer", "")
@@ -171,24 +201,6 @@ async def import_cert(file: UploadFile | None = File(None),
 
     chain_found = ca_row is not None
 
-    cur = conn.execute(
-        """INSERT INTO certificates
-           (req_id, cn, sans, subject, issuer, issuer_cn, cert_type, serial,
-            thumbprint_sha1, not_before, not_after, key_type, source, file_path, lifecycle_status)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (req_id, info["cn"], info["sans"], info["subject"], info["issuer"],
-         info["issuer_cn"], info["cert_type"], info["serial"],
-         info["thumbprint_sha1"], info["not_before"],
-         info["not_after"], info["key_type"], "importado", file_path, lifecycle),
-    )
-    cert_id = cur.lastrowid
-    _link_parent(conn, cert_id, info["issuer"], info["subject"])
-    log_activity(conn, "cert_importado",
-                 f"{info['cn']} · vence {info['not_after'][:10]}", req_id)
-    if req:
-        conn.execute("UPDATE reqs SET status='cert_emitido', "
-                     "updated_at=datetime('now','localtime') WHERE id=? AND status IN ('aberta','csr_gerada')",
-                     (req_id,))
     # Confere se a chave pública do certificado corresponde à CSR gerada nesta demanda
     csr_match = None
     if req_id:
@@ -213,6 +225,8 @@ async def import_cert(file: UploadFile | None = File(None),
     row["issuer_name"] = issuer_cn or issuer_dn or "Desconhecido"
     row["chain_ca"] = dict(ca_row) if ca_row else None
     row["csr_match"] = csr_match
+    row["already_imported"] = already_imported
+    conn.commit()
     conn.close()
     return row
 
@@ -277,6 +291,34 @@ def delete_cert(cert_id: int):
     conn.commit()
     conn.close()
     return {"ok": True}
+
+@router.get("/certs/{cert_id}/pem")
+def get_cert_pem(cert_id: int):
+    """Recupera o PEM normalizado do certificado a partir do arquivo salvo na importação."""
+    conn = get_db()
+    row = conn.execute("SELECT file_path, cn FROM certificates WHERE id=?", (cert_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Certificado não encontrado")
+    if not row["file_path"]:
+        raise HTTPException(404, "Este certificado não tem arquivo salvo (ex.: CA cadastrada manualmente).")
+    path = Path(row["file_path"])
+    if not path.exists():
+        raise HTTPException(404, "Arquivo do certificado não foi encontrado em disco.")
+    data = path.read_bytes()
+    try:
+        cert = certparse._load_x509(data)
+    except ValueError:
+        try:
+            _key, cert, _extra = pkcs12.load_key_and_certificates(data, None)
+            if cert is None:
+                raise ValueError
+        except Exception:
+            raise HTTPException(400,
+                "Não consegui ler o certificado salvo (PFX protegido por senha ou formato não "
+                "reconhecido) — use o Decoder para abrir o arquivo original com a senha.")
+    return {"pem": cert.public_bytes(serialization.Encoding.PEM).decode()}
+
 
 @router.get("/certs/{cert_id}/history")
 def get_cert_history(cert_id: int):
