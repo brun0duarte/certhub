@@ -17,8 +17,8 @@ conn.row_factory = sqlite3.Row
 conn.execute("PRAGMA foreign_keys = ON")
 
 TABLES_TO_CLEAR = [
-    "wo_tasks",
-    "work_orders",
+    "install_task_evidence",
+    "install_tasks",
     "install_locations",
     "certificates",
     "activity_log",
@@ -27,17 +27,18 @@ TABLES_TO_CLEAR = [
     "sessions",
 ]
 
-# Limpa tabela legado se ainda existir
+# Limpa tabelas legado se ainda existirem (schemas antigos/parciais)
 tables_in_db = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-if "crq_tasks" in tables_in_db:
-    conn.execute("DELETE FROM crq_tasks")
+for legacy in ("crq_tasks", "wo_tasks", "work_orders"):
+    if legacy in tables_in_db:
+        conn.execute(f"DELETE FROM {legacy}")
 
 for table in TABLES_TO_CLEAR:
     if table in tables_in_db:
         conn.execute(f"DELETE FROM {table}")
 
 # Remove contadores autoincremento das tabelas limpas.
-all_cleared = TABLES_TO_CLEAR + (["crq_tasks"] if "crq_tasks" in tables_in_db else [])
+all_cleared = TABLES_TO_CLEAR + [t for t in ("crq_tasks", "wo_tasks", "work_orders") if t in tables_in_db]
 conn.execute(
     "DELETE FROM sqlite_sequence WHERE name IN ({})".format(
         ",".join("?" for _ in all_cleared)
