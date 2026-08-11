@@ -1,13 +1,14 @@
 """CertHub — aplicação FastAPI."""
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import init_db
-from .routers import (certs, csr, dashboard, docs, files, monitor, passwords, reqs,
-                      settings, tasks, templates, validate, auth, users, work_orders)
+from .routers import (certs, checklists, csr, dashboard, decoder, docs, files, monitor,
+                      passwords, reqs, settings, tasks, templates, validate, auth, users)
+from .routers.auth import require_auth
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -18,19 +19,32 @@ init_db()
 for router in (reqs.router, certs.router, csr.router, passwords.router,
                dashboard.router, docs.router, files.router, monitor.router,
                settings.router, tasks.router, templates.router, validate.router,
-               work_orders.router):
-    app.include_router(router, prefix="/api")
+               decoder.router, checklists.router):
+    app.include_router(router, prefix="/api", dependencies=[Depends(require_auth)])
 
+# login/logout precisam ficar públicos — auth.router não leva a dependência global
 app.include_router(auth.router)
-app.include_router(users.router)
+app.include_router(users.router, dependencies=[Depends(require_auth)])
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+def _versioned_html(path: Path) -> str:
+    """Injeta ?v={mtime} em /static/... para o navegador não servir JS/CSS em cache
+    depois de um deploy novo."""
+    html = path.read_text(encoding="utf-8")
+    for asset in ("app.js", "styles.css"):
+        asset_path = STATIC_DIR / asset
+        if asset_path.exists():
+            v = int(asset_path.stat().st_mtime)
+            html = html.replace(f"/static/{asset}", f"/static/{asset}?v={v}")
+    return html
+
+
 @app.get("/", include_in_schema=False)
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return HTMLResponse(_versioned_html(STATIC_DIR / "index.html"))
 
 @app.get("/login", include_in_schema=False)
 def login_page():
-    return FileResponse(STATIC_DIR / "login.html")
+    return HTMLResponse(_versioned_html(STATIC_DIR / "login.html"))
