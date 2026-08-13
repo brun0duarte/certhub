@@ -4,11 +4,12 @@ import re
 import sqlite3
 from contextlib import contextmanager
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..db import REQ_STATUSES, get_db, get_setting, log_activity
 from ..services import folders, passwordgen
+from .auth import require_auth
 
 router = APIRouter(tags=["reqs"])
 REQ_FORMAT = re.compile(r"^[A-Z0-9_\-\.]{3,30}$", re.IGNORECASE)
@@ -139,7 +140,7 @@ def _next_req_number(conn) -> str:
 
 
 @router.post("/reqs")
-def create_req(body: ReqIn):
+def create_req(body: ReqIn, user=Depends(require_auth)):
     with db_conn() as conn:
         # Auto-generate REQ number if not provided
         if not body.req_number:
@@ -173,9 +174,9 @@ def create_req(body: ReqIn):
 
 
         req_id = cur.lastrowid
-        log_activity(conn, "req_criada", f"{req_number} · CN {body.cn} · {body.env}", req_id)
+        log_activity(conn, "req_criada", f"{req_number} · CN {body.cn} · {body.env}", req_id, user["id"])
         if password and body.auto_password and not body.password:
-            log_activity(conn, "senha_gerada", "Senha gerada automaticamente na criação", req_id)
+            log_activity(conn, "senha_gerada", "Senha gerada automaticamente na criação", req_id, user["id"])
         if body.demand_type == 'instalacao' and body.env == 'PRD':
             _seed_install_tasks(conn, req_id)
         conn.commit()
@@ -229,7 +230,9 @@ def get_req(req_id: int):
         req["install_tasks"] = tasks
 
         req["activity"] = [dict(r) for r in conn.execute(
-            "SELECT * FROM activity_log WHERE req_id=? ORDER BY id DESC LIMIT 50", (req_id,))]
+            """SELECT a.*, u.display_name AS user_name FROM activity_log a
+               LEFT JOIN users u ON u.id = a.user_id
+               WHERE a.req_id=? ORDER BY a.id DESC LIMIT 50""", (req_id,))]
         req["past_reqs"] = [dict(r) for r in conn.execute(
             "SELECT id, req_number, demand_type, env, status, created_at, external_partner, partner_email, partner_registration FROM reqs WHERE cn=? AND id!=? ORDER BY id DESC LIMIT 10",
             (req["cn"], req_id)
@@ -281,7 +284,7 @@ def get_cn_history(cn: str):
 
 
 @router.put("/reqs/{req_id}")
-def update_req(req_id: int, body: ReqUpdate):
+def update_req(req_id: int, body: ReqUpdate, user=Depends(require_auth)):
     with db_conn() as conn:
         row = conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone()
         if not row:
@@ -309,25 +312,29 @@ def update_req(req_id: int, body: ReqUpdate):
                 (*fields.values(), req_id),
             )
             if "status" in fields:
-                log_activity(conn, "status_alterado", f"{row['status']} → {fields['status']}", req_id)
+                log_activity(conn, "status_alterado", f"{row['status']} → {fields['status']}", req_id, user["id"])
+            other_fields = [k for k in fields if k != "status"]
+            if other_fields:
+                log_activity(conn, "demanda_editada", f"Campos alterados: {', '.join(other_fields)}",
+                             req_id, user["id"])
             conn.commit()
         return dict(conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone())
 
 
 @router.delete("/reqs/{req_id}")
-def delete_req(req_id: int):
+def delete_req(req_id: int, user=Depends(require_auth)):
     with db_conn() as conn:
         row = conn.execute("SELECT req_number FROM reqs WHERE id=?", (req_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Demanda não encontrada")
         conn.execute("DELETE FROM reqs WHERE id=?", (req_id,))
-        log_activity(conn, "req_excluida", row["req_number"])
+        log_activity(conn, "req_excluida", row["req_number"], None, user["id"])
         conn.commit()
         return {"ok": True}
 
 
 @router.post("/reqs/{req_id}/advance-to-installation")
-def advance_to_installation(req_id: int):
+def advance_to_installation(req_id: int, user=Depends(require_auth)):
     """Avança a MESMA demanda de geração/recebimento/renovação concluída para a fase
     de instalação (demand_type='instalacao'). Não cria uma REQ nova — é a mesma REQ
     seguindo para a próxima fase do ciclo de vida."""
@@ -345,7 +352,7 @@ def advance_to_installation(req_id: int):
             WHERE id=?
         """, (req_id,))
         log_activity(conn, "avancou_instalacao",
-                     f"Demanda {row['req_number']} avançou para fase de instalação", req_id)
+                     f"Demanda {row['req_number']} avançou para fase de instalação", req_id, user["id"])
         if row['env'] == 'PRD':
             _seed_install_tasks(conn, req_id)
         conn.commit()
@@ -353,7 +360,7 @@ def advance_to_installation(req_id: int):
 
 
 @router.post("/reqs/{req_id}/password/regenerate")
-def regenerate_password(req_id: int):
+def regenerate_password(req_id: int, user=Depends(require_auth)):
     with db_conn() as conn:
         row = conn.execute("SELECT id FROM reqs WHERE id=?", (req_id,)).fetchone()
         if not row:
@@ -361,13 +368,13 @@ def regenerate_password(req_id: int):
         password = _auto_password(conn)
         conn.execute("UPDATE reqs SET password=?, updated_at=datetime('now','localtime') WHERE id=?",
                      (password, req_id))
-        log_activity(conn, "senha_gerada", "Senha regenerada", req_id)
+        log_activity(conn, "senha_gerada", "Senha regenerada", req_id, user["id"])
         conn.commit()
         return {"password": password}
 
 
 @router.post("/reqs/{req_id}/import-previous-locations")
-def import_previous_locations(req_id: int):
+def import_previous_locations(req_id: int, user=Depends(require_auth)):
     """Importa locais de instalação de demandas anteriores do mesmo CN."""
     with db_conn() as conn:
         current = conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone()
@@ -403,14 +410,14 @@ def import_previous_locations(req_id: int):
                 added += 1
 
 
-        log_activity(conn, "locais_importados", f"Importados {added} locais de instalação de demandas anteriores do CN {current['cn']}", req_id)
+        log_activity(conn, "locais_importados", f"Importados {added} locais de instalação de demandas anteriores do CN {current['cn']}", req_id, user["id"])
         conn.commit()
         return {"added": added}
 
 
 
 @router.post("/reqs/{req_id}/folder")
-def create_folder(req_id: int):
+def create_folder(req_id: int, user=Depends(require_auth)):
     with db_conn() as conn:
         row = conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone()
         if not row:
@@ -418,13 +425,13 @@ def create_folder(req_id: int):
         base = get_setting(conn, "base_dir")
         template = get_setting(conn, "folder_template")
         folder = folders.create_structure(base, template, row["req_number"], row["cn"], row["env"])
-        log_activity(conn, "pasta_criada", str(folder), req_id)
+        log_activity(conn, "pasta_criada", str(folder), req_id, user["id"])
         conn.commit()
         return {"folder": str(folder)}
 
 
 @router.post("/reqs/{req_id}/locations")
-def add_location(req_id: int, body: LocationIn):
+def add_location(req_id: int, body: LocationIn, user=Depends(require_auth)):
     with db_conn() as conn:
         if not conn.execute("SELECT id FROM reqs WHERE id=?", (req_id,)).fetchone():
             raise HTTPException(404, "Demanda não encontrada")
@@ -433,25 +440,25 @@ def add_location(req_id: int, body: LocationIn):
             "VALUES (?,?,?,?,?,?)",
             (req_id, body.cert_id, body.server, body.path_or_store, body.installed_at, body.notes),
         )
-        log_activity(conn, "local_adicionado", f"{body.server} · {body.path_or_store}", req_id)
+        log_activity(conn, "local_adicionado", f"{body.server} · {body.path_or_store}", req_id, user["id"])
         conn.commit()
         return dict(conn.execute("SELECT * FROM install_locations WHERE id=?", (cur.lastrowid,)).fetchone())
 
 
 @router.delete("/locations/{loc_id}")
-def delete_location(loc_id: int):
+def delete_location(loc_id: int, user=Depends(require_auth)):
     with db_conn() as conn:
         row = conn.execute("SELECT * FROM install_locations WHERE id=?", (loc_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Local não encontrado")
         conn.execute("DELETE FROM install_locations WHERE id=?", (loc_id,))
-        log_activity(conn, "local_removido", f"{row['server']} · {row['path_or_store']}", row["req_id"])
+        log_activity(conn, "local_removido", f"{row['server']} · {row['path_or_store']}", row["req_id"], user["id"])
         conn.commit()
         return {"ok": True}
 
 
 @router.put("/locations/{loc_id}/status")
-def update_location_status(loc_id: int, body: LocationStatusUpdate):
+def update_location_status(loc_id: int, body: LocationStatusUpdate, user=Depends(require_auth)):
     """Atualiza status de instalação de um local específico."""
     if body.status not in ('pendente', 'instalado', 'falhou'):
         raise HTTPException(400, "Status inválido. Use: pendente, instalado, falhou")
@@ -465,17 +472,33 @@ def update_location_status(loc_id: int, body: LocationStatusUpdate):
             SET status = ?, completed_at = {completed}
             WHERE id = ?
         """, (body.status, loc_id))
+        log_activity(conn, "local_status_alterado",
+                     f"{loc['server']} · {loc['path_or_store']}: {loc['status']} → {body.status}",
+                     loc["req_id"], user["id"])
         conn.commit()
         return {"ok": True}
 
 
 @router.get("/activity")
-def recent_activity(limit: int = 30):
+def recent_activity(limit: int = 30, search: str = "", user_id: int | None = None, action: str = ""):
     with db_conn() as conn:
-        return [dict(r) for r in conn.execute(
-            """SELECT a.*, r.req_number FROM activity_log a
-               LEFT JOIN reqs r ON r.id = a.req_id
-               ORDER BY a.id DESC LIMIT ?""", (min(limit, 200),))]
+        sql = """SELECT a.*, r.req_number, u.display_name AS user_name FROM activity_log a
+                 LEFT JOIN reqs r ON r.id = a.req_id
+                 LEFT JOIN users u ON u.id = a.user_id
+                 WHERE 1=1"""
+        params = []
+        if search:
+            sql += " AND (a.detail LIKE ? OR a.action LIKE ? OR r.req_number LIKE ?)"
+            params += [f"%{search}%"] * 3
+        if user_id is not None:
+            sql += " AND a.user_id = ?"
+            params.append(user_id)
+        if action:
+            sql += " AND a.action = ?"
+            params.append(action)
+        sql += " ORDER BY a.id DESC LIMIT ?"
+        params.append(min(limit, 500))
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
 FLOWS: dict[str, str] = {

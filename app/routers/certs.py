@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from datetime import datetime, timezone
 
@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import pkcs12
 from ..db import CERT_TYPES, get_db, get_setting, log_activity, LIFECYCLE_STATUSES
 from ..services import certparse, folders
+from .auth import require_auth
 
 
 router = APIRouter(tags=["certs"])
@@ -43,7 +44,7 @@ def _link_parent(conn, cert_id: int, issuer_dn: str, subject_dn: str):
 
 @router.get("/certs")
 def list_certs(search: str = "", expiring_days: int | None = None,
-               cert_type: str = "", issuer_cn: str = "", lifecycle: str = ""):
+               cert_type: str = "", issuer_cn: str = "", lifecycle: str = "", env: str = ""):
     conn = get_db()
     sql = """SELECT c.*, r.req_number, r.env,
                     p.cn AS parent_cn,
@@ -69,6 +70,9 @@ def list_certs(search: str = "", expiring_days: int | None = None,
     if lifecycle:
         sql += " AND c.lifecycle_status = ?"
         params.append(lifecycle)
+    if env:
+        sql += " AND r.env = ?"
+        params.append(env)
     sql += " ORDER BY c.not_after ASC"
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     issuers = [r[0] for r in conn.execute(
@@ -106,7 +110,8 @@ def relink_certs():
 async def import_cert(file: UploadFile | None = File(None),
                       pem_text: str = Form(""),
                       password: str = Form(""),
-                      req_id: int | None = Form(None)):
+                      req_id: int | None = Form(None),
+                      user=Depends(require_auth)):
     if pem_text and pem_text.strip():
         data = pem_text.strip().encode("utf-8")
         filename = "certificado.pem"
@@ -183,7 +188,7 @@ async def import_cert(file: UploadFile | None = File(None),
         _link_parent(conn, cert_id, info["issuer"], info["subject"])
 
     log_activity(conn, "cert_relinkado" if already_imported else "cert_importado",
-                 f"{info['cn']} · vence {info['not_after'][:10]}", req_id)
+                 f"{info['cn']} · vence {info['not_after'][:10]}", req_id, user["id"])
     if req:
         conn.execute("UPDATE reqs SET status='cert_emitido', "
                      "updated_at=datetime('now','localtime') WHERE id=? AND status IN ('aberta','csr_gerada')",
@@ -234,7 +239,7 @@ async def import_cert(file: UploadFile | None = File(None),
 
 
 @router.put("/certs/{cert_id}")
-def update_cert(cert_id: int, body: CertUpdate):
+def update_cert(cert_id: int, body: CertUpdate, user=Depends(require_auth)):
     fields = body.model_dump(exclude_unset=True)
     if "cert_type" in fields and fields["cert_type"] not in CERT_TYPES + [""]:
         raise HTTPException(400, f"Tipo inválido. Use: {', '.join(CERT_TYPES)} ou vazio")
@@ -253,7 +258,12 @@ def update_cert(cert_id: int, body: CertUpdate):
                      (*fields.values(), cert_id))
         if "req_id" in fields:
             log_activity(conn, "cert_vinculado", f"Certificado #{cert_id} vinculado",
-                         fields["req_id"])
+                         fields["req_id"], user["id"])
+        other_fields = [k for k in fields if k != "req_id"]
+        if other_fields:
+            row = conn.execute("SELECT req_id FROM certificates WHERE id=?", (cert_id,)).fetchone()
+            log_activity(conn, "cert_editado", f"Campos alterados: {', '.join(other_fields)}",
+                         row["req_id"], user["id"])
         conn.commit()
     conn.close()
     return {"ok": True}
@@ -262,44 +272,40 @@ class LifecycleUpdate(BaseModel):
     lifecycle_status: str
 
 @router.put('/certs/{cert_id}/lifecycle')
-def update_lifecycle(cert_id: int, body: LifecycleUpdate):
+def update_lifecycle(cert_id: int, body: LifecycleUpdate, user=Depends(require_auth)):
     if body.lifecycle_status not in LIFECYCLE_STATUSES:
         raise HTTPException(400, f'Status inválido. Use: {LIFECYCLE_STATUSES}')
     conn = get_db()
-    if not conn.execute('SELECT id FROM certificates WHERE id=?', (cert_id,)).fetchone():
+    row = conn.execute('SELECT req_id FROM certificates WHERE id=?', (cert_id,)).fetchone()
+    if not row:
         conn.close()
         raise HTTPException(404, 'Certificado não encontrado')
     conn.execute(
         "UPDATE certificates SET lifecycle_status=? WHERE id=?",
         (body.lifecycle_status, cert_id)
     )
-    log_activity(conn, 'lifecycle_alterado', f'{body.lifecycle_status}', None)
+    log_activity(conn, 'lifecycle_alterado', f'{body.lifecycle_status}', row["req_id"], user["id"])
     conn.commit()
     conn.close()
     return {'ok': True, 'lifecycle_status': body.lifecycle_status}
 
 
 @router.delete("/certs/{cert_id}")
-def delete_cert(cert_id: int):
+def delete_cert(cert_id: int, user=Depends(require_auth)):
     conn = get_db()
     row = conn.execute("SELECT * FROM certificates WHERE id=?", (cert_id,)).fetchone()
     if not row:
         conn.close()
         raise HTTPException(404, "Certificado não encontrado")
     conn.execute("DELETE FROM certificates WHERE id=?", (cert_id,))
-    log_activity(conn, "cert_removido", row["cn"] or "", row["req_id"])
+    log_activity(conn, "cert_removido", row["cn"] or "", row["req_id"], user["id"])
     conn.commit()
     conn.close()
     return {"ok": True}
 
-@router.get("/certs/{cert_id}/pem")
-def get_cert_pem(cert_id: int):
-    """Recupera o PEM normalizado do certificado a partir do arquivo salvo na importação."""
-    conn = get_db()
-    row = conn.execute("SELECT file_path, cn FROM certificates WHERE id=?", (cert_id,)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(404, "Certificado não encontrado")
+def _read_cert_pem(row) -> str:
+    """Relê o arquivo salvo na importação e devolve o PEM normalizado. Lança HTTPException
+    se não houver arquivo, o arquivo não existir em disco, ou não for legível sem senha."""
     if not row["file_path"]:
         raise HTTPException(404, "Este certificado não tem arquivo salvo (ex.: CA cadastrada manualmente).")
     path = Path(row["file_path"])
@@ -317,7 +323,68 @@ def get_cert_pem(cert_id: int):
             raise HTTPException(400,
                 "Não consegui ler o certificado salvo (PFX protegido por senha ou formato não "
                 "reconhecido) — use o Decoder para abrir o arquivo original com a senha.")
-    return {"pem": cert.public_bytes(serialization.Encoding.PEM).decode()}
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+@router.get("/certs/{cert_id}/pem")
+def get_cert_pem(cert_id: int):
+    """Recupera o PEM normalizado do certificado a partir do arquivo salvo na importação."""
+    conn = get_db()
+    row = conn.execute("SELECT file_path, cn FROM certificates WHERE id=?", (cert_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Certificado não encontrado")
+    return {"pem": _read_cert_pem(row)}
+
+
+def _walk_chain(conn, cert_id: int) -> list[dict]:
+    """Sobe a cadeia via parent_id (folha → ... → raiz), até faltar link ou detectar ciclo."""
+    chain = []
+    seen = set()
+    row = conn.execute("SELECT * FROM certificates WHERE id=?", (cert_id,)).fetchone()
+    while row and row["id"] not in seen:
+        seen.add(row["id"])
+        chain.append(dict(row))
+        if not row["parent_id"]:
+            break
+        row = conn.execute("SELECT * FROM certificates WHERE id=?", (row["parent_id"],)).fetchone()
+    return chain
+
+
+@router.get("/certs/{cert_id}/chain")
+def get_cert_chain(cert_id: int):
+    """Cadeia completa do certificado (folha → intermediárias → raiz), a partir do
+    que já está vinculado via parent_id (ver /certs/relink)."""
+    conn = get_db()
+    if not conn.execute("SELECT 1 FROM certificates WHERE id=?", (cert_id,)).fetchone():
+        conn.close()
+        raise HTTPException(404, "Certificado não encontrado")
+    chain = _walk_chain(conn, cert_id)
+    conn.close()
+    last = chain[-1] if chain else None
+    complete = bool(last) and last["issuer"] == last["subject"]
+    return {"chain": chain, "complete": complete}
+
+
+@router.get("/certs/{cert_id}/chain-pem")
+def get_cert_chain_pem(cert_id: int):
+    """Bundle PEM com toda a cadeia (folha primeiro) montado a partir dos certificados
+    já em inventário — pula (e reporta) elos sem arquivo salvo ou ilegíveis."""
+    conn = get_db()
+    if not conn.execute("SELECT 1 FROM certificates WHERE id=?", (cert_id,)).fetchone():
+        conn.close()
+        raise HTTPException(404, "Certificado não encontrado")
+    chain = _walk_chain(conn, cert_id)
+    conn.close()
+    parts, missing = [], []
+    for c in chain:
+        try:
+            parts.append(_read_cert_pem(c))
+        except HTTPException:
+            missing.append(c["cn"])
+    last = chain[-1] if chain else None
+    complete = bool(last) and last["issuer"] == last["subject"]
+    return {"pem": "".join(parts), "count": len(parts), "missing": missing, "complete": complete}
 
 
 @router.get("/certs/{cert_id}/history")
@@ -347,8 +414,9 @@ def get_cert_history(cert_id: int):
         ).fetchall()]
     
     activity = [dict(a) for a in conn.execute(
-        "SELECT al.*, r.req_number FROM activity_log al "
+        "SELECT al.*, r.req_number, u.display_name AS user_name FROM activity_log al "
         "LEFT JOIN reqs r ON r.id = al.req_id "
+        "LEFT JOIN users u ON u.id = al.user_id "
         "WHERE al.req_id IN (SELECT id FROM reqs WHERE cn=?) "
         "ORDER BY al.created_at DESC LIMIT 50",
         (cn,)

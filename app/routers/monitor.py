@@ -1,6 +1,7 @@
 """Monitor de vencimentos de certificados."""
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from app.db import get_db, log_activity, LIFECYCLE_STATUSES
+from app.routers.auth import require_auth
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
 
@@ -92,7 +93,7 @@ def monitor_summary():
     return result
 
 @router.post("/certs/{cert_id}/flag-renewal")
-def flag_for_renewal(cert_id: int):
+def flag_for_renewal(cert_id: int, user=Depends(require_auth)):
     """Marca certificado como 'em_renovacao' para iniciar processo de renovação."""
     conn = get_db()
     row = conn.execute("SELECT * FROM certificates WHERE id = ?", (cert_id,)).fetchone()
@@ -104,7 +105,7 @@ def flag_for_renewal(cert_id: int):
         (cert_id,)
     )
     log_activity(conn, "lifecycle_em_renovacao",
-                 f"Certificado {row['cn']} marcado para renovação", row['req_id'])
+                 f"Certificado {row['cn']} marcado para renovação", row['req_id'], user["id"])
     conn.commit()
     conn.close()
     return {"ok": True}

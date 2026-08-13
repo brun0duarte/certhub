@@ -1,8 +1,9 @@
 """Kanban de tarefas: CRUD, prioridades e movimentação entre colunas."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..db import TASK_LANES, TASK_PRIORITIES, get_db, log_activity
+from .auth import require_auth
 
 router = APIRouter(tags=["tasks"])
 
@@ -58,7 +59,7 @@ def list_tasks(category: str = ""):
 
 
 @router.post("/tasks")
-def create_task(body: TaskIn):
+def create_task(body: TaskIn, user=Depends(require_auth)):
     if not body.title.strip():
         raise HTTPException(400, "Informe o título da tarefa")
     _validate(body.priority, body.lane)
@@ -69,7 +70,7 @@ def create_task(body: TaskIn):
         (body.title.strip(), body.description, body.category.strip().lower() or "geral",
          body.priority, body.lane, _next_position(conn, body.lane)),
     )
-    log_activity(conn, "tarefa_criada", f"{body.title.strip()} · {body.priority}")
+    log_activity(conn, "tarefa_criada", f"{body.title.strip()} · {body.priority}", None, user["id"])
     conn.commit()
     row = dict(conn.execute("SELECT * FROM tasks WHERE id=?", (cur.lastrowid,)).fetchone())
     conn.close()
@@ -77,7 +78,7 @@ def create_task(body: TaskIn):
 
 
 @router.put("/tasks/{task_id}")
-def update_task(task_id: int, body: TaskUpdate):
+def update_task(task_id: int, body: TaskUpdate, user=Depends(require_auth)):
     conn = get_db()
     row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
     if not row:
@@ -99,6 +100,7 @@ def update_task(task_id: int, body: TaskUpdate):
             f"UPDATE tasks SET {sets}, updated_at=datetime('now','localtime') WHERE id=?",
             (*fields.values(), task_id),
         )
+        log_activity(conn, "tarefa_editada", row["title"], None, user["id"])
         conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
     conn.close()
@@ -106,7 +108,7 @@ def update_task(task_id: int, body: TaskUpdate):
 
 
 @router.post("/tasks/{task_id}/move")
-def move_task(task_id: int, body: TaskMove):
+def move_task(task_id: int, body: TaskMove, user=Depends(require_auth)):
     _validate(lane=body.lane)
     conn = get_db()
     row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -119,7 +121,7 @@ def move_task(task_id: int, body: TaskMove):
             "WHERE id=?",
             (body.lane, _next_position(conn, body.lane), task_id),
         )
-        log_activity(conn, "tarefa_movida", f"{row['title']}: {row['lane']} → {body.lane}")
+        log_activity(conn, "tarefa_movida", f"{row['title']}: {row['lane']} → {body.lane}", None, user["id"])
         conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
     conn.close()
@@ -127,14 +129,14 @@ def move_task(task_id: int, body: TaskMove):
 
 
 @router.delete("/tasks/{task_id}")
-def delete_task(task_id: int):
+def delete_task(task_id: int, user=Depends(require_auth)):
     conn = get_db()
     row = conn.execute("SELECT title FROM tasks WHERE id=?", (task_id,)).fetchone()
     if not row:
         conn.close()
         raise HTTPException(404, "Tarefa não encontrada")
     conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
-    log_activity(conn, "tarefa_excluida", row["title"])
+    log_activity(conn, "tarefa_excluida", row["title"], None, user["id"])
     conn.commit()
     conn.close()
     return {"ok": True}

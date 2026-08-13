@@ -2,12 +2,13 @@
 tarefas concretas por demanda de instalação e evidências anexadas."""
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..db import INSTALL_TASK_STATUSES, get_db, get_setting, log_activity
 from ..services import folders
+from .auth import require_auth
 
 router = APIRouter(tags=["checklists"])
 
@@ -105,7 +106,7 @@ def _task_and_req(conn, task_id: int):
 
 
 @router.put("/install-tasks/{task_id}")
-def update_install_task(task_id: int, body: InstallTaskUpdate):
+def update_install_task(task_id: int, body: InstallTaskUpdate, user=Depends(require_auth)):
     conn = get_db()
     task, req = _task_and_req(conn, task_id)
     fields = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
@@ -118,7 +119,10 @@ def update_install_task(task_id: int, body: InstallTaskUpdate):
                      (*fields.values(), task_id))
         if "status" in fields:
             log_activity(conn, "checklist_tarefa_status",
-                         f"{task['title']} → {fields['status']}", task["req_id"])
+                         f"{task['title']} → {fields['status']}", task["req_id"], user["id"])
+        if "notes" in fields:
+            log_activity(conn, "checklist_tarefa_notas", f"{task['title']}: notas atualizadas",
+                         task["req_id"], user["id"])
         conn.commit()
     row = dict(conn.execute("SELECT * FROM install_tasks WHERE id=?", (task_id,)).fetchone())
     conn.close()
@@ -135,7 +139,7 @@ def _evidence_folder(conn, req, task_id: int) -> Path:
 
 
 @router.post("/install-tasks/{task_id}/evidence")
-async def upload_evidence(task_id: int, file: UploadFile = File(...)):
+async def upload_evidence(task_id: int, file: UploadFile = File(...), user=Depends(require_auth)):
     conn = get_db()
     task, req = _task_and_req(conn, task_id)
     dest_folder = _evidence_folder(conn, req, task_id)
@@ -145,7 +149,7 @@ async def upload_evidence(task_id: int, file: UploadFile = File(...)):
     cur = conn.execute(
         "INSERT INTO install_task_evidence (task_id, filename, file_path) VALUES (?,?,?)",
         (task_id, safe_name, str(dest)))
-    log_activity(conn, "checklist_evidencia_anexada", f"{task['title']} · {safe_name}", task["req_id"])
+    log_activity(conn, "checklist_evidencia_anexada", f"{task['title']} · {safe_name}", task["req_id"], user["id"])
     conn.commit()
     row = dict(conn.execute("SELECT * FROM install_task_evidence WHERE id=?", (cur.lastrowid,)).fetchone())
     conn.close()
@@ -167,14 +171,17 @@ def download_evidence(task_id: int, evidence_id: int):
 
 
 @router.delete("/install-tasks/{task_id}/evidence/{evidence_id}")
-def delete_evidence(task_id: int, evidence_id: int):
+def delete_evidence(task_id: int, evidence_id: int, user=Depends(require_auth)):
     conn = get_db()
     row = conn.execute("SELECT * FROM install_task_evidence WHERE id=? AND task_id=?",
                        (evidence_id, task_id)).fetchone()
     if not row:
         conn.close()
         raise HTTPException(404, "Evidência não encontrada")
+    task = conn.execute("SELECT title, req_id FROM install_tasks WHERE id=?", (task_id,)).fetchone()
     conn.execute("DELETE FROM install_task_evidence WHERE id=?", (evidence_id,))
+    log_activity(conn, "checklist_evidencia_removida", f"{task['title']} · {row['filename']}",
+                 task["req_id"], user["id"])
     conn.commit()
     conn.close()
     path = Path(row["file_path"])

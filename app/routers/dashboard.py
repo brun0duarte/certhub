@@ -34,8 +34,10 @@ def dashboard():
             ORDER BY c.not_after ASC LIMIT 10""", (max(alert_days),))]
 
     activity = [dict(r) for r in conn.execute(
-        """SELECT a.*, r.req_number FROM activity_log a
-           LEFT JOIN reqs r ON r.id = a.req_id ORDER BY a.id DESC LIMIT 10""")]
+        """SELECT a.*, r.req_number, u.display_name AS user_name FROM activity_log a
+           LEFT JOIN reqs r ON r.id = a.req_id
+           LEFT JOIN users u ON u.id = a.user_id
+           ORDER BY a.id DESC LIMIT 10""")]
 
     totals = {
         "reqs": conn.execute("SELECT COUNT(*) FROM reqs").fetchone()[0],

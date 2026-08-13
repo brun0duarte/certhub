@@ -519,6 +519,15 @@ def init_db():
             (default_msg_tpl,))
         version = 20
 
+    if version >= 20 and version < 21:
+        # Reintroduz activity_log.user_id (removida na v18 por estar morta) — agora que
+        # a auth é aplicada de verdade na API, faz sentido registrar quem fez cada ação.
+        try:
+            conn.execute("ALTER TABLE activity_log ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        except sqlite3.OperationalError:
+            pass
+        version = 21
+
     if version > 0:
         conn.execute(f"PRAGMA user_version = {version}")
         conn.commit()
@@ -586,10 +595,10 @@ def _fix_certificates_check_constraint(conn):
 
 
 
-def log_activity(conn, action: str, detail: str = "", req_id=None):
+def log_activity(conn, action: str, detail: str = "", req_id=None, user_id=None):
     conn.execute(
-        "INSERT INTO activity_log (req_id, action, detail) VALUES (?,?,?)",
-        (req_id, action, detail),
+        "INSERT INTO activity_log (req_id, action, detail, user_id) VALUES (?,?,?,?)",
+        (req_id, action, detail, user_id),
     )
 
 

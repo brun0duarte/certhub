@@ -2,12 +2,13 @@
 Inclui também o decoder de CSR e o repositório de CSRs decodificadas."""
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..db import get_db, get_setting, log_activity
 from ..services import crypto, decoder, folders
 from ..services.hsm.hsmutil import HsmUtilProvider
+from .auth import require_auth
 
 router = APIRouter(tags=["csr"])
 
@@ -38,7 +39,7 @@ def _req_and_folder(conn, req_id):
 
 
 @router.post("/csr/generate")
-def generate_csr(body: CsrIn):
+def generate_csr(body: CsrIn, user=Depends(require_auth)):
     cn = body.cn.strip()
     if not cn:
         raise HTTPException(400, "Informe o CN")
@@ -94,7 +95,7 @@ def generate_csr(body: CsrIn):
         conn.close()
         raise HTTPException(400, "Engine inválida (local, certreq ou hsmutil)")
 
-    log_activity(conn, "csr_gerada", detail, body.req_id)
+    log_activity(conn, "csr_gerada", detail, body.req_id, user["id"])
     if result.get("csr_pem"):
         conn.execute("""
             INSERT INTO csrs (cn, sans, subject, key_type, req_id, pem)
@@ -139,7 +140,7 @@ class CsrSaveIn(BaseModel):
 
 
 @router.post("/csrs")
-def save_csr(body: CsrSaveIn):
+def save_csr(body: CsrSaveIn, user=Depends(require_auth)):
     _, info = _decode_csr(body.pem)
     conn = get_db()
     if body.req_id and not conn.execute(
@@ -155,7 +156,7 @@ def save_csr(body: CsrSaveIn):
            VALUES (?,?,?,?,?,?,?)""",
         (info["cn"], info["sans"], info["subject"], info["key_type"],
          info["sig_algo"], body.req_id, info["pem"]))
-    log_activity(conn, "csr_importada", f"{info['cn']} · {info['key_type']}", body.req_id)
+    log_activity(conn, "csr_importada", f"{info['cn']} · {info['key_type']}", body.req_id, user["id"])
     conn.commit()
     row = dict(conn.execute("SELECT * FROM csrs WHERE id=?", (cur.lastrowid,)).fetchone())
     conn.close()
@@ -174,14 +175,14 @@ def list_csrs():
 
 
 @router.delete("/csrs/{csr_id}")
-def delete_csr(csr_id: int):
+def delete_csr(csr_id: int, user=Depends(require_auth)):
     conn = get_db()
     row = conn.execute("SELECT cn FROM csrs WHERE id=?", (csr_id,)).fetchone()
     if not row:
         conn.close()
         raise HTTPException(404, "CSR não encontrada")
     conn.execute("DELETE FROM csrs WHERE id=?", (csr_id,))
-    log_activity(conn, "csr_removida", row["cn"] or "")
+    log_activity(conn, "csr_removida", row["cn"] or "", None, user["id"])
     conn.commit()
     conn.close()
     return {"ok": True}
