@@ -32,25 +32,47 @@ docker compose up -d --build
 
 | Aba | O que faz |
 |---|---|
-| 📊 Dashboard | Vencimentos (≤30/60/90 dias), REQs por status/ambiente, atividade |
-| 📈 Analytics | Gráficos: saúde/vencimentos dos certificados, demandas, tarefas, atividade |
-| 🗂️ Kanban | Quadro de tarefas dos projetos — colunas, prioridades, categorias, drag-and-drop |
-| 📋 Demandas | CRUD de REQs com senha automática, notas, locais, histórico e respostas prontas |
+| 📊 Dashboard | Vencimentos (≤30/60/90 dias), REQs por status/ambiente, gráficos e atividade recente |
+| 📡 Monitor | Painel dedicado de vencimentos, com sinalização para renovação |
+| 📋 Geração | Demandas de geração/recebimento/renovação/revogação — CRUD com senha automática, aba "Certificado Gerado" (CSR) x "Certificado Importado" |
+| 🔧 Instalação | Demanda avança pra fase de instalação (mesma REQ, muda `demand_type`) — ticket WO/CRQ, checklist de ativação com templates de tarefa/mensagem, evidências e notas |
+| 🗄️ Histórico | Busca global por qualquer demanda, incluindo concluídas/canceladas |
+| 🗂️ Kanban | Quadro de tarefas dos projetos — colunas, prioridades, categorias, drag-and-drop, busca |
 | 📝 Gerar CSR | Wildcard/SAN via `cryptography`, `.inf` p/ certreq ou HSM (hsmutil) |
-| 🔍 CSR Decoder | Decodifica CSRs (CN, SANs, chave, assinatura) e guarda num repositório |
-| 📜 Certificados | Importa e classifica (servidor/cliente mTLS/CA), filtra por emissor, vincula cadeias |
+| 🔍 Decoder | Decoder geral com auto-detecção: CSR, certificado, chave privada ou PFX (PEM/DER) |
+| 📜 Certificados | Importa e classifica (servidor/cliente mTLS/CA), filtra por emissor/ambiente, cadeia completa com PEM copiável |
 | 🔗 Validar cadeia | Análise elo a elo (assinaturas, validade, hostname), AIA e servidor remoto TLS |
 | 🔑 Senhas | Gerador com política configurável (módulo `secrets`), cópia individual ou de todas |
-| 📖 Manuais | Guias de instalação + cheatsheets certutil/certreq/openssl/keytool |
+| 📖 Manuais & Comandos | Guias de instalação (Apache, Nginx, IIS, Tomcat, Azure Key Vault, AWS ACM/Secrets Manager, mainframe RACDCERT, Azion, Windows Server, Akamai) + cheatsheets certutil/certreq/openssl/keytool |
+| 👥 Usuários | Gestão de contas, roles (admin/operator/viewer) |
+| 🕵️ Auditoria | Log de toda ação registrada no sistema — quem criou/editou o quê e quando, com filtros por usuário/ação/busca |
 | 🎨 Aparência | Tema claro/escuro, menu lateral/compacto/horizontal, cor de destaque |
 | ⚙️ Configurações | Pastas, alertas, política de senha, templates do HSM e de resposta |
+
+## Autenticação
+
+Toda a API exige sessão autenticada (cookie assinado via `itsdangerous`). Usuário admin
+padrão criado no primeiro boot: `admin` / `certhub@2025` — **senha de desenvolvimento,
+troque antes de qualquer uso além de demonstração local.**
 
 ## Dados de demonstração
 
 ```bash
-.venv/bin/python scripts/demo_data.py           # cria demandas/certificados fictícios (bancofic.com.br)
-.venv/bin/python scripts/demo_data.py --remove  # remove tudo que o script criou
+.venv/bin/python scripts/demo_data.py           # cria usuários/demandas/certificados fictícios (bancofic.com.br)
+.venv/bin/python scripts/demo_data.py --remove  # remove tudo que o script criou (usuários são preservados)
 ```
+
+### Usuários de demonstração
+
+Além do `admin`, o seed cria 5 contas de teste (senha `{usuário}@2026`, ex. `alex@2026`):
+
+| Usuário | Role | Senha |
+|---|---|---|
+| alex | admin | `alex@2026` |
+| bruno | admin | `bruno@2026` |
+| carlos | operator | `carlos@2026` |
+| davi | operator | `davi@2026` |
+| leonardo | viewer | `leonardo@2026` |
 
 ## Estrutura de pastas por demanda
 
