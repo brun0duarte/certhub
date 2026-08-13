@@ -89,7 +89,7 @@ body {
 [data-layout="top"] .brand-sub { display: none; }
 [data-layout="top"] #nav { flex-direction: row; flex-wrap: wrap; padding: 8px; }
 [data-layout="top"] #nav a { padding: 7px 11px; white-space: nowrap; }
-[data-layout="top"] .sidebar-footer { border-top: none; padding: 8px 12px; flex-shrink: 0; }
+[data-layout="top"] .sidebar-footer { border-top: none; padding: 8px 12px; flex-shrink: 0; flex-direction: row; align-items: center; }
 [data-layout="top"] .main { max-width: 1280px; width: 100%; margin: 0 auto; }
 
 /* ---------- layout compacto (menu recolhido, só ícones) ---------- */
@@ -102,8 +102,9 @@ body {
 [data-layout="compact"] .sidebar-footer {
   display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px;
 }
+[data-layout="compact"] .sidebar-user-section { display: none; }
 [data-layout="top"] #menu-collapse { display: none; }
-.sidebar-footer { display: flex; gap: 6px; align-items: center; }
+.sidebar-footer { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 
 /* ---------- main ---------- */
 .main { flex: 1; padding: 26px 32px 60px; max-width: 1280px; }
@@ -238,6 +239,8 @@ pre.code-block {
 }
 .toast.err { border-left-color: var(--red); }
 .toast.ok { border-left-color: var(--green); }
+.toast.toast-undo { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.toast.toast-undo button { flex-shrink: 0; }
 @keyframes slide { from { transform: translateX(30px); opacity: 0; } }
 
 /* ---------- docs / markdown ---------- */

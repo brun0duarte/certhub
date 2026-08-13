@@ -29,6 +29,39 @@ function toast(msg, type = "ok") {
   setTimeout(() => el.remove(), 4200);
 }
 
+/* Ação adiada: só executa `run` depois de `delaySeconds` se o usuário não clicar
+   em "Desfazer" antes. Nada acontece de verdade (nem no servidor) até o tempo passar. */
+function withUndo(message, run, { delaySeconds = 12, onUndo } = {}) {
+  const el = document.createElement("div");
+  el.className = "toast ok toast-undo";
+  const span = document.createElement("span");
+  span.textContent = message;
+  const btn = document.createElement("button");
+  btn.className = "btn btn-sm btn-ghost";
+  let remaining = delaySeconds;
+  btn.textContent = `Desfazer (${remaining}s)`;
+  el.appendChild(span);
+  el.appendChild(btn);
+  $("#toast-root").appendChild(el);
+
+  let done = false;
+  const tick = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) { finish(true); return; }
+    btn.textContent = `Desfazer (${remaining}s)`;
+  }, 1000);
+
+  function finish(execute) {
+    if (done) return;
+    done = true;
+    clearInterval(tick);
+    el.remove();
+    if (execute) run();
+  }
+
+  btn.onclick = () => { finish(false); onUndo && onUndo(); };
+}
+
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -142,6 +175,15 @@ const LIFECYCLE_STATUS = {
 };
 const INSTALL_TASK_STATUS = { pendente: 'Pendente', em_andamento: 'Em andamento', sucesso: 'Sucesso', falha: 'Falha' };
 const OWNERSHIP_LABEL = { interno: 'Privado (Interno)', externo: 'Público (Externo)' };
+const ACTIVITY_ACTIONS = [
+  "avancou_instalacao", "cert_editado", "cert_importado", "cert_relinkado", "cert_removido", "cert_vinculado",
+  "checklist_evidencia_anexada", "checklist_evidencia_removida", "checklist_tarefa_notas",
+  "checklist_tarefa_status", "csr_gerada", "csr_importada", "csr_removida", "demanda_editada",
+  "doc_criado", "doc_editado", "doc_excluido", "lifecycle_alterado", "lifecycle_em_renovacao",
+  "local_status_alterado", "locais_importados", "local_adicionado", "local_removido",
+  "pasta_criada", "req_criada", "req_excluida", "senha_gerada", "status_alterado",
+  "tarefa_criada", "tarefa_editada", "tarefa_excluida", "tarefa_movida",
+].sort();
 const ownershipBadge = o => {
   const isPub = o === 'externo' || o === 'publico';
   return `<span class="badge ${isPub ? 'badge-purple' : 'badge-blue'}" title="${isPub ? 'Certificado Público / Chave privada não controlada internamente' : 'Certificado Privado / Chave privada controlada internamente'}">${isPub ? '🌐 Público' : '🔒 Privado'}</span>`;
@@ -259,7 +301,7 @@ views.dashboard = async () => {
         ${d.activity.length ? `<ul class="timeline">${d.activity.map(a => `
           <li><div>${esc(a.action.replaceAll("_", " "))} ${a.req_number ? `<span class="mono">· ${esc(a.req_number)}</span>` : ""}</div>
               <div class="muted">${esc(a.detail)}</div>
-              <div class="t-when">${fmtDateTime(a.created_at)}</div></li>`).join("")}
+              <div class="t-when">${fmtDateTime(a.created_at)}${a.user_name ? ` · ${esc(a.user_name)}` : ""}</div></li>`).join("")}
         </ul>` : `<div class="empty">Sem atividade ainda</div>`}
       </div>
     </div>
@@ -309,6 +351,7 @@ views.kanban = async () => {
       <div class="view-sub">Tarefas dos projetos — arraste os cartões entre as colunas</div>
     </div>
     <div class="toolbar">
+      <input class="input" id="k-search" placeholder="Buscar título, descrição…" style="min-width:200px">
       <select class="input" id="k-filter"><option value="">Todas as categorias</option></select>
       <button class="btn btn-primary" id="k-new">＋ Nova tarefa</button>
     </div></div>
@@ -320,8 +363,11 @@ views.kanban = async () => {
     sel.innerHTML = `<option value="">Todas as categorias</option>` +
       data.categories.map(c => `<option value="${esc(c)}" ${c === filterCat ? "selected" : ""}>${esc(c)}</option>`).join("");
 
+    const q = ($("#k-search").value || "").trim().toLowerCase();
+    const matches = t => !q || t.title.toLowerCase().includes(q) || (t.description || "").toLowerCase().includes(q);
+
     $("#k-board").innerHTML = LANES.map(([lane, label]) => {
-      const cards = data.tasks.filter(t => t.lane === lane);
+      const cards = data.tasks.filter(t => t.lane === lane && matches(t));
       return `
         <div class="kanban-col" data-lane="${lane}">
           <div class="kanban-col-head"><span>${label}</span><span class="kanban-count">${cards.length}</span></div>
@@ -359,6 +405,7 @@ views.kanban = async () => {
   }
 
   $("#k-filter").onchange = () => { filterCat = $("#k-filter").value; load(); };
+  $("#k-search").oninput = () => { clearTimeout(window._kt); window._kt = setTimeout(load, 300); };
   $("#k-new").onclick = () => taskModal(null, load);
   await load();
 };
@@ -398,10 +445,12 @@ function taskModal(t, onDone) {
       onDone && onDone();
     } catch (e) { toast(e.message, "err"); }
   };
-  if (t) $("#t-delete").onclick = async () => {
-    if (!confirm(`Excluir a tarefa "${t.title}"?`)) return;
-    await api(`/tasks/${t.id}`, { method: "DELETE" });
-    closeModal(); toast("Tarefa excluída"); onDone && onDone();
+  if (t) $("#t-delete").onclick = () => {
+    closeModal();
+    withUndo(`Tarefa "${t.title}" será excluída`, async () => {
+      try { await api(`/tasks/${t.id}`, { method: "DELETE" }); onDone && onDone(); }
+      catch (e) { toast(e.message, "err"); }
+    }, { onUndo: () => onDone && onDone() });
   };
 }
 
@@ -485,7 +534,7 @@ views.geracao = async () => {
   main.innerHTML = `
     <div class="view-header"><div>
       <div class="view-title">📋 Demandas de Geração</div>
-      <div class="view-sub">REQs de geração e recebimento de certificados em andamento</div>
+      <div class="view-sub">REQs de geração, recebimento, renovação e revogação de certificados em andamento</div>
     </div>
     <button class="btn btn-primary" id="g-new">＋ Nova demanda</button></div>
     <div class="panel">
@@ -494,16 +543,18 @@ views.geracao = async () => {
         <select class="input" id="g-env"><option value="">Ambiente</option>${ENVS.map(e => `<option>${e}</option>`).join('')}</select>
         <select class="input" id="g-status"><option value="">Status</option>${STATUSES.map(s => `<option value="${s}">${STATUS_LABEL[s]}</option>`).join('')}</select>
         <select class="input" id="g-type">
-          <option value="geracao,recebimento">Todos</option>
+          <option value="geracao,recebimento,renovacao,revogacao">Todos</option>
           <option value="geracao">Geração</option>
           <option value="recebimento">Recebimento</option>
+          <option value="renovacao">Renovação</option>
+          <option value="revogacao">Revogação</option>
         </select>
       </div>
       <div id="g-table"></div>
     </div>`;
 
   async function load() {
-    const demandType = $("#g-type").value || 'geracao,recebimento';
+    const demandType = $("#g-type").value || 'geracao,recebimento,renovacao,revogacao';
     const params = new URLSearchParams({
       search: $("#g-search").value,
       env: $("#g-env").value,
@@ -589,6 +640,124 @@ views.instalacao = async () => {
 
   $("#i-search").oninput = () => { clearTimeout(window._it); window._it = setTimeout(load, 300); };
   $("#i-env").onchange = $("#i-status").onchange = load;
+  await load();
+};
+
+/* ---------------- Histórico — busca sem filtro por tipo/status ---------------- */
+views.historico = async () => {
+  main.innerHTML = `
+    <div class="view-header"><div>
+      <div class="view-title">🗄️ Histórico</div>
+      <div class="view-sub">Busca qualquer demanda, de qualquer tipo e status — inclusive concluídas e canceladas</div>
+    </div></div>
+    <div class="panel">
+      <div class="toolbar" style="margin-bottom:12px">
+        <input class="input" id="h-search" placeholder="Buscar REQ, CN, notas…" style="min-width:240px">
+        <select class="input" id="h-env"><option value="">Ambiente</option>${ENVS.map(e => `<option>${e}</option>`).join('')}</select>
+        <select class="input" id="h-status"><option value="">Status (todos)</option>${STATUSES.map(s => `<option value="${s}">${STATUS_LABEL[s]}</option>`).join('')}</select>
+        <select class="input" id="h-type"><option value="">Tipo (todos)</option>
+          ${["geracao", "recebimento", "renovacao", "revogacao", "instalacao", "importacao"].map(t =>
+            `<option value="${t}">${DEMAND_TYPES[t] || t}</option>`).join('')}
+        </select>
+      </div>
+      <div id="h-table"></div>
+    </div>`;
+
+  async function load() {
+    const params = new URLSearchParams({
+      search: $("#h-search").value,
+      env: $("#h-env").value,
+      status: $("#h-status").value,
+      demand_type: $("#h-type").value,
+    });
+    const rows = await api("/reqs?" + params);
+
+    $("#h-table").innerHTML = rows.length ? `
+      <table class="tbl"><thead><tr>
+        <th>REQ</th><th>Tipo</th><th>CN</th><th>Env</th><th>Status</th><th>Certs</th><th>Criada</th><th></th>
+      </tr></thead><tbody>
+      ${rows.map(r => `<tr>
+        <td class="mono">${esc(r.req_number)}</td>
+        <td>${demandBadge(r.demand_type)}</td>
+        <td>${esc(r.cn)}</td>
+        <td>${envBadge(r.env)}</td>
+        <td>${statusBadge(r.status)}</td>
+        <td>${r.cert_count}</td>
+        <td>${fmtDate(r.created_at)}</td>
+        <td><button class="btn btn-sm" data-open="${r.id}">Abrir</button></td>
+      </tr>`).join('')}
+      </tbody></table>`
+    : `<div class="empty">Nenhuma demanda encontrada.</div>`;
+
+    $$("[data-open]").forEach(el => el.onclick = () => openReq(+el.dataset.open, load));
+  }
+
+  $("#h-search").oninput = () => { clearTimeout(window._ht); window._ht = setTimeout(load, 300); };
+  $("#h-env").onchange = $("#h-status").onchange = $("#h-type").onchange = load;
+  await load();
+};
+
+/* ---------------- Log de Auditoria ---------------- */
+views.auditoria = async () => {
+  const users = await api("/users/lookup").catch(() => []);
+  main.innerHTML = `
+    <div class="view-header"><div>
+      <div class="view-title">🕵️ Log de Auditoria</div>
+      <div class="view-sub">Toda ação registrada no sistema, com quem fez e quando</div>
+    </div></div>
+    <div class="panel">
+      <div class="toolbar" style="margin-bottom:12px">
+        <input class="input" id="au-search" placeholder="Buscar REQ, ação, detalhe…" style="min-width:240px">
+        <select class="input" id="au-user"><option value="">Usuário (todos)</option>
+          ${users.map(u => `<option value="${u.id}">${esc(u.display_name || u.username)}</option>`).join('')}
+        </select>
+        <select class="input" id="au-action"><option value="">Ação (todas)</option></select>
+      </div>
+      <div id="au-table"></div>
+    </div>`;
+
+  if (!$("#au-action").dataset.filled) {
+    $("#au-action").innerHTML = `<option value="">Ação (todas)</option>` +
+      ACTIVITY_ACTIONS.map(a => `<option value="${esc(a)}">${esc(a.replaceAll('_', ' '))}</option>`).join('');
+    $("#au-action").dataset.filled = "1";
+  }
+
+  async function load() {
+    const params = new URLSearchParams({
+      search: $("#au-search").value,
+      action: $("#au-action").value,
+      limit: "300",
+    });
+    const userId = $("#au-user").value;
+    if (userId) params.set("user_id", userId);
+
+    let rows = [];
+    try {
+      rows = await api("/activity?" + params);
+    } catch (e) {
+      $("#au-table").innerHTML = `<div class="empty">Erro ao carregar auditoria: ${esc(e.message || e)}</div>`;
+      return;
+    }
+
+    $("#au-table").innerHTML = rows.length ? `
+      <table class="tbl"><thead><tr>
+        <th>Quando</th><th>Ação</th><th>Detalhe</th><th>Demanda</th><th>Usuário</th>
+      </tr></thead><tbody>
+      ${rows.map(a => `<tr>
+        <td class="mono muted" style="white-space:nowrap">${fmtDateTime(a.created_at)}</td>
+        <td>${esc(a.action.replaceAll('_', ' '))}</td>
+        <td>${esc(a.detail || '—')}</td>
+        <td>${a.req_number ? `<button class="btn btn-sm btn-ghost mono" data-open-req="${a.req_id}">${esc(a.req_number)}</button>` : '—'}</td>
+        <td>${esc(a.user_name || '—')}</td>
+      </tr>`).join('')}
+      </tbody></table>`
+    : `<div class="empty">Nenhum evento encontrado.</div>`;
+
+    $$("[data-open-req]").forEach(el => el.onclick = () => openReq(+el.dataset.openReq, load));
+  }
+
+  $("#au-search").oninput = () => { clearTimeout(window._at); window._at = setTimeout(load, 300); };
+  $("#au-user").onchange = $("#au-action").onchange = load;
   await load();
 };
 
@@ -979,11 +1148,25 @@ async function openReq(id, onDone) {
           </tbody></table>
         </div>
         <div class="subtab-panel" data-subpanel="dump" style="display:none">
-          <table class="tbl"><tbody>${Object.entries(c).map(([k, v]) =>
-            `<tr><th style="width:180px">${esc(k)}</th><td class="mono" style="word-break:break-all">${
-              v === null || v === "" ? "—" : esc(String(v))}</td></tr>`).join("")}
+          <table class="tbl"><tbody>
+            <tr><th style="width:180px">CN</th><td class="mono">${esc(c.cn || '—')}</td></tr>
+            <tr><th>SANs</th><td class="mono" style="white-space:pre-line">${
+              (c.sans || '').split(',').map(s => s.trim()).filter(Boolean).join('\n') || '—'}</td></tr>
+            <tr><th>Subject (DN)</th><td class="mono" style="word-break:break-all">${esc(c.subject || '—')}</td></tr>
+            <tr><th>Issuer (DN)</th><td class="mono" style="word-break:break-all">${esc(c.issuer || '—')}</td></tr>
+            <tr><th>Tipo</th><td>${certTypeBadge(c.cert_type)}</td></tr>
+            <tr><th>Serial</th><td class="mono" style="word-break:break-all">${esc(c.serial || '—')}</td></tr>
+            <tr><th>Thumbprint (SHA1)</th><td class="mono" style="word-break:break-all">${esc(c.thumbprint_sha1 || '—')}</td></tr>
+            <tr><th>Válido de</th><td>${fmtDateTime(c.not_before)}</td></tr>
+            <tr><th>Válido até</th><td>${fmtDateTime(c.not_after)}</td></tr>
+            <tr><th>Chave</th><td class="mono">${esc(c.key_type || '—')}</td></tr>
           </tbody></table>
         </div>
+        <div class="mt" style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-sm" data-cert-copy-pem="${c.id}">📋 Copiar PEM</button>
+          <button class="btn btn-sm" data-cert-chain="${c.id}">🔗 Cadeia completa</button>
+        </div>
+        <div class="mt" data-chain-result="${c.id}" style="display:none"></div>
       </div>`).join("")}`
         : `<div class="panel mt" style="background:var(--bg-sunken);padding:8px 12px;border-left:3px solid var(--amber);font-size:12px">
             ⚠️ <strong>Certificado Pendente:</strong> Você precisa importar o certificado emitido (Arquivo .cer/.pfx ou Texto PEM) usando o botão acima para concluir esta demanda.
@@ -1073,7 +1256,7 @@ async function openReq(id, onDone) {
     <ul class="timeline">${r.activity.map(a => `
       <li><div>${esc(a.action.replaceAll("_", " "))}</div>
         <div class="muted">${esc(a.detail)}</div>
-        <div class="t-when">${fmtDateTime(a.created_at)}</div></li>`).join("") || ""}</ul>
+        <div class="t-when">${fmtDateTime(a.created_at)}${a.user_name ? ` · ${esc(a.user_name)}` : ""}</div></li>`).join("") || ""}</ul>
   `, { large: true, footer: `
       <button class="btn btn-danger" id="d-delete">Excluir demanda</button>
       ${(!isPublic && (r.demand_type === 'geracao' || r.demand_type === 'renovacao')) ? `<button class="btn" id="d-gocsr">📝 Gerar CSR</button>` : ''}
@@ -1084,6 +1267,44 @@ async function openReq(id, onDone) {
       importCertModal(() => { openReq(id, onDone); }, id);
     };
   }
+
+  $$("[data-cert-copy-pem]").forEach(el => el.onclick = async () => {
+    try {
+      const { pem } = await api(`/certs/${el.dataset.certCopyPem}/pem`);
+      copyText(pem, "PEM copiado!");
+    } catch (e) { toast(e.message, "err"); }
+  });
+  $$("[data-cert-chain]").forEach(el => el.onclick = async () => {
+    const certId = el.dataset.certChain;
+    const box = $(`[data-chain-result="${certId}"]`);
+    if (box.style.display !== "none") { box.style.display = "none"; return; }
+    try {
+      const { chain, complete } = await api(`/certs/${certId}/chain`);
+      box.innerHTML = `
+        <table class="tbl"><tbody>
+          ${chain.map((c, i) => `<tr>
+            <td class="mono muted">${i === 0 ? "Folha" : (i === chain.length - 1 && complete ? "Raiz" : "Intermediária")}</td>
+            <td><strong>${esc(c.cn)}</strong></td>
+            <td class="muted">${esc(c.issuer_cn || c.issuer || "—")}</td>
+          </tr>`).join("")}
+        </tbody></table>
+        ${complete
+          ? `<div class="muted" style="margin-top:6px">✅ Cadeia completa até a raiz, disponível em inventário.</div>`
+          : `<div class="panel" style="background:var(--bg-sunken);padding:8px 12px;border-left:3px solid var(--amber);font-size:12px;margin-top:6px">
+               ⚠️ Cadeia incompleta — falta a emissora de <strong>${esc(chain[chain.length - 1].cn)}</strong> no inventário.
+             </div>`}
+        <button class="btn btn-sm mt" data-copy-chain-pem="${certId}">📋 Copiar cadeia (PEM)</button>
+      `;
+      box.style.display = "";
+      $(`[data-copy-chain-pem="${certId}"]`).onclick = async () => {
+        try {
+          const res = await api(`/certs/${certId}/chain-pem`);
+          copyText(res.pem, res.missing.length
+            ? `Cadeia copiada (faltou: ${res.missing.join(", ")})` : "Cadeia completa copiada!");
+        } catch (e) { toast(e.message, "err"); }
+      };
+    } catch (e) { toast(e.message, "err"); }
+  });
 
   $$(".tab-btn").forEach(btn => btn.onclick = () => {
     $$(".tab-btn").forEach(b => b.classList.toggle("active", b === btn));
@@ -1159,9 +1380,13 @@ async function openReq(id, onDone) {
       closeModal(); openReq(id, onDone);
     } catch (e) { toast(e.message, "err"); }
   };
-  $$("[data-del-loc]").forEach(el => el.onclick = async () => {
-    await api(`/locations/${el.dataset.delLoc}`, { method: "DELETE" });
-    closeModal(); openReq(id, onDone);
+  $$("[data-del-loc]").forEach(el => el.onclick = () => {
+    const locId = el.dataset.delLoc;
+    closeModal();
+    withUndo("Local de instalação será removido", async () => {
+      try { await api(`/locations/${locId}`, { method: "DELETE" }); openReq(id, onDone); }
+      catch (e) { toast(e.message, "err"); }
+    }, { onUndo: () => openReq(id, onDone) });
   });
   if ($("#d-gocsr")) {
     $("#d-gocsr").onclick = () => {
@@ -1204,6 +1429,11 @@ async function openReq(id, onDone) {
   $("#d-save").onclick = async () => {
     try {
       const newStatus = $("#d-status").value;
+      const before = {
+        status: r.status, notes: r.notes, demand_type: r.demand_type,
+        ownership: r.ownership, external_partner: r.external_partner,
+        partner_email: r.partner_email, partner_registration: r.partner_registration,
+      };
       await api(`/reqs/${id}`, { method: "PUT", json: {
         status: newStatus,
         notes: $("#d-notes").value,
@@ -1212,16 +1442,27 @@ async function openReq(id, onDone) {
         partner_email: $("#d-partner-email") ? $("#d-partner-email").value : undefined,
         partner_registration: $("#d-partner-reg") ? $("#d-partner-reg").value : undefined,
       }});
-      closeModal(); toast("Demanda atualizada"); onDone && onDone();
+      closeModal(); onDone && onDone();
 
+      let advanced = false;
       // Ao concluir geração/recebimento/renovação, avançar a mesma REQ para fase de instalação
       if (newStatus === 'concluida' && (r.demand_type === 'geracao' || r.demand_type === 'recebimento' || r.demand_type === 'renovacao')) {
         try {
           const inst = await api(`/reqs/${id}/advance-to-installation`, { method: "POST" });
+          advanced = true;
           toast(`✅ ${inst.req_number} avançou para Instalação!`);
           onDone && onDone();
         } catch (e) { toast(e.message, 'err'); }
       }
+
+      withUndo(advanced ? "Demanda atualizada e avançada para instalação" : "Demanda atualizada", () => {}, {
+        onUndo: async () => {
+          try {
+            await api(`/reqs/${id}`, { method: "PUT", json: before });
+            toast("Alteração desfeita"); onDone && onDone();
+          } catch (e) { toast(e.message, "err"); }
+        },
+      });
     } catch (e) { toast(e.message, "err"); }
   };
 
@@ -1281,19 +1522,23 @@ async function openReq(id, onDone) {
       toast("Evidência anexada"); openReq(id, onDone);
     } catch (e) { toast(e.message, "err"); }
   });
-  $$("[data-ev-del]").forEach(el => el.onclick = async () => {
-    if (!confirm("Remover esta evidência?")) return;
-    try {
-      await api(`/install-tasks/${el.dataset.evTask}/evidence/${el.dataset.evDel}`, { method: "DELETE" });
-      toast("Evidência removida"); openReq(id, onDone);
-    } catch (e) { toast(e.message, "err"); }
+  $$("[data-ev-del]").forEach(el => el.onclick = () => {
+    const taskId = el.dataset.evTask, evId = el.dataset.evDel;
+    withUndo("Evidência será removida", async () => {
+      try {
+        await api(`/install-tasks/${taskId}/evidence/${evId}`, { method: "DELETE" });
+        openReq(id, onDone);
+      } catch (e) { toast(e.message, "err"); }
+    });
   });
 
 
-  $("#d-delete").onclick = async () => {
-    if (!confirm(`Excluir a demanda ${r.req_number}? O histórico e locais serão removidos.`)) return;
-    await api(`/reqs/${id}`, { method: "DELETE" });
-    closeModal(); toast("Demanda excluída"); onDone && onDone();
+  $("#d-delete").onclick = () => {
+    closeModal();
+    withUndo(`Demanda ${r.req_number} será excluída — histórico e locais serão removidos`, async () => {
+      try { await api(`/reqs/${id}`, { method: "DELETE" }); onDone && onDone(); }
+      catch (e) { toast(e.message, "err"); }
+    }, { onUndo: () => onDone && onDone() });
   };
 }
 
@@ -1491,10 +1736,12 @@ views.decoder = async () => {
       : `<div class="empty">Nenhuma CSR guardada ainda.</div>`;
     $$("[data-copy-pem]").forEach(el => el.onclick = () =>
       copyText(rows.find(s => s.id === +el.dataset.copyPem).pem, "PEM copiado!"));
-    $$("[data-del-csr]").forEach(el => el.onclick = async () => {
-      if (!confirm("Remover esta CSR do repositório?")) return;
-      await api(`/csrs/${el.dataset.delCsr}`, { method: "DELETE" });
-      toast("CSR removida"); loadList();
+    $$("[data-del-csr]").forEach(el => el.onclick = () => {
+      const csrId = el.dataset.delCsr;
+      withUndo("CSR será removida do repositório", async () => {
+        try { await api(`/csrs/${csrId}`, { method: "DELETE" }); loadList(); }
+        catch (e) { toast(e.message, "err"); }
+      });
     });
   }
 
@@ -1623,9 +1870,10 @@ views.certs = async () => {
         </select>
         <select class="input" id="cf-lifecycle">
           <option value="">Todos Lifecycle</option>
-          ${Object.entries(LIFECYCLE_STATUS).map(([k, v]) => 
+          ${Object.entries(LIFECYCLE_STATUS).map(([k, v]) =>
             `<option value="${k}">${esc(v)}</option>`).join("")}
         </select>
+        <select class="input" id="cf-env"><option value="">Ambiente</option>${ENVS.map(e => `<option>${e}</option>`).join('')}</select>
         <select class="input" id="cf-issuer"><option value="">Emissor</option></select>
       </div>
       <div id="cert-table"></div>
@@ -1637,6 +1885,7 @@ views.certs = async () => {
       search: $("#cf-search").value,
       cert_type: $("#cf-type").value,
       lifecycle: $("#cf-lifecycle").value,
+      env: $("#cf-env").value,
       issuer_cn: issuerSel,
     });
     if ($("#cf-exp").value !== "") params.set("expiring_days", $("#cf-exp").value);
@@ -1671,14 +1920,16 @@ views.certs = async () => {
       : `<div class="empty">Nenhum certificado encontrado.</div>`;
     $$("[data-detail]").forEach(el => el.onclick = () =>
       certDetail(rows.find(c => c.id === +el.dataset.detail), load));
-    $$("[data-del]").forEach(el => el.onclick = async () => {
-      if (!confirm("Remover este certificado do registro?")) return;
-      await api(`/certs/${el.dataset.del}`, { method: "DELETE" });
-      toast("Certificado removido"); load();
+    $$("[data-del]").forEach(el => el.onclick = () => {
+      const certId = el.dataset.del;
+      withUndo("Certificado será removido do registro", async () => {
+        try { await api(`/certs/${certId}`, { method: "DELETE" }); load(); }
+        catch (e) { toast(e.message, "err"); }
+      });
     });
   }
   $("#cf-search").oninput = () => { clearTimeout(window._t2); window._t2 = setTimeout(load, 300); };
-  $("#cf-exp").onchange = $("#cf-type").onchange = $("#cf-lifecycle").onchange = load;
+  $("#cf-exp").onchange = $("#cf-type").onchange = $("#cf-lifecycle").onchange = $("#cf-env").onchange = load;
   $("#cf-issuer").onchange = () => { issuerSel = $("#cf-issuer").value; load(); };
   $("#cert-import").onclick = () => importCertModal(load);
   $("#cert-relink").onclick = async () => {
@@ -1771,7 +2022,7 @@ function certDetail(c, onDone) {
         <ul class="timeline">${h.activity.map(a => `
           <li><div>${esc(a.action.replaceAll('_',' '))} ${a.req_number ? `<span class="mono">· ${esc(a.req_number)}</span>` : ''}</div>
             <div class="muted">${esc(a.detail)}</div>
-            <div class="t-when">${fmtDateTime(a.created_at)}</div></li>`).join('') || '<li class="muted">Sem atividade.</li>'}
+            <div class="t-when">${fmtDateTime(a.created_at)}${a.user_name ? ` · ${esc(a.user_name)}` : ''}</div></li>`).join('') || '<li class="muted">Sem atividade.</li>'}
         </ul>
       `, { large: true });
     } catch (e) { toast(e.message, "err"); }
@@ -1925,13 +2176,32 @@ views.docs = async () => {
     <button class="btn btn-primary" id="doc-new">＋ Novo documento</button></div>
     <div class="docs-layout">
       <div class="panel" id="doc-list">
+        <input class="input" id="doc-search" placeholder="Buscar manual…" style="margin-bottom:10px">
+        <div id="doc-list-items">
         ${Object.entries(cats).map(([cat, list]) => `
-          <div class="doc-list-cat">${CAT_LABEL[cat] || cat}</div>
-          ${list.map(d => `<button class="doc-list-item" data-doc="${d.id}">${esc(d.title)}</button>`).join("")}
+          <div class="doc-list-cat" data-doc-cat>${CAT_LABEL[cat] || cat}</div>
+          ${list.map(d => `<button class="doc-list-item" data-doc="${d.id}" data-doc-title="${esc(d.title.toLowerCase())}">${esc(d.title)}</button>`).join("")}
         `).join("") || `<div class="empty">Nenhum documento</div>`}
+        </div>
       </div>
       <div class="panel" id="doc-content"><div class="empty">Selecione um documento à esquerda.</div></div>
     </div>`;
+
+  $("#doc-search").oninput = () => {
+    const q = $("#doc-search").value.trim().toLowerCase();
+    let lastCat = null, catHasVisible = false;
+    $$("#doc-list-items > *").forEach(el => {
+      if (el.hasAttribute("data-doc-cat")) {
+        if (lastCat) lastCat.style.display = catHasVisible ? "" : "none";
+        lastCat = el; catHasVisible = false;
+      } else {
+        const visible = !q || el.dataset.docTitle.includes(q);
+        el.style.display = visible ? "" : "none";
+        if (visible) catHasVisible = true;
+      }
+    });
+    if (lastCat) lastCat.style.display = catHasVisible ? "" : "none";
+  };
 
   async function show(id) {
     $$(".doc-list-item").forEach(b => b.classList.toggle("active", +b.dataset.doc === id));
@@ -1946,10 +2216,11 @@ views.docs = async () => {
     $$("[data-copy-code]", $("#doc-content")).forEach(btn =>
       btn.onclick = () => copyText(btn.parentElement.textContent.replace(/^Copiar/, "").trim(), "Comando copiado!"));
     $("#doc-edit").onclick = () => editDoc(d);
-    $("#doc-del").onclick = async () => {
-      if (!confirm(`Excluir "${d.title}"?`)) return;
-      await api(`/docs/${id}`, { method: "DELETE" });
-      toast("Documento excluído"); views.docs();
+    $("#doc-del").onclick = () => {
+      withUndo(`Documento "${d.title}" será excluído`, async () => {
+        try { await api(`/docs/${id}`, { method: "DELETE" }); views.docs(); }
+        catch (e) { toast(e.message, "err"); }
+      });
     };
   }
 
@@ -2071,11 +2342,12 @@ views.settings = async () => {
       </div>`).join("") : `<div class="muted">Nenhum template.</div>`;
     $$("[data-tpl-edit]").forEach(el => el.onclick = () =>
       tplModal(tpls.find(t => t.id === +el.dataset.tplEdit), loadTpls));
-    $$("[data-tpl-del]").forEach(el => el.onclick = async () => {
+    $$("[data-tpl-del]").forEach(el => el.onclick = () => {
       const t = tpls.find(x => x.id === +el.dataset.tplDel);
-      if (!confirm(`Excluir o template "${t.name}"?`)) return;
-      await api(`/templates/${t.id}`, { method: "DELETE" });
-      toast("Template excluído"); loadTpls();
+      withUndo(`Template "${t.name}" será excluído`, async () => {
+        try { await api(`/templates/${t.id}`, { method: "DELETE" }); loadTpls(); }
+        catch (e) { toast(e.message, "err"); }
+      });
     });
   }
 
@@ -2114,11 +2386,12 @@ views.settings = async () => {
       </div>`).join("") : `<div class="muted">Nenhuma tarefa padrão cadastrada.</div>`;
     $$("[data-ck-edit]").forEach(el => el.onclick = () =>
       checklistTplModal(tpls.find(t => t.id === +el.dataset.ckEdit), loadChecklist));
-    $$("[data-ck-del]").forEach(el => el.onclick = async () => {
+    $$("[data-ck-del]").forEach(el => el.onclick = () => {
       const t = tpls.find(x => x.id === +el.dataset.ckDel);
-      if (!confirm(`Excluir a tarefa padrão "${t.title}"?`)) return;
-      await api(`/checklist-templates/${t.id}`, { method: "DELETE" });
-      toast("Tarefa padrão excluída"); loadChecklist();
+      withUndo(`Tarefa padrão "${t.title}" será excluída`, async () => {
+        try { await api(`/checklist-templates/${t.id}`, { method: "DELETE" }); loadChecklist(); }
+        catch (e) { toast(e.message, "err"); }
+      });
     });
   }
 
@@ -2417,11 +2690,12 @@ views.users = async () => {
     };
   });
   
-  $$("[data-del]").forEach(btn => btn.onclick = async () => {
-    if (!confirm("Desativar este usuário?")) return;
-    await api(`/users/${btn.dataset.del}`, { method: "DELETE" });
-    toast("Usuário desativado!");
-    views.users();
+  $$("[data-del]").forEach(btn => btn.onclick = () => {
+    const userId = btn.dataset.del;
+    withUndo("Usuário será desativado", async () => {
+      try { await api(`/users/${userId}`, { method: "DELETE" }); views.users(); }
+      catch (e) { toast(e.message, "err"); }
+    });
   });
 };
 
