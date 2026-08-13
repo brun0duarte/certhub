@@ -33,6 +33,39 @@ DEMO_USERS = [
     ("leonardo", "Leonardo Alves", "viewer"),
 ]
 
+DEMO_DOCS = [
+    {
+        "title": 'Instalação de certificado — Azure Key Vault',
+        "category": 'manual',
+        "content_md": '# Instalação de certificado — Azure Key Vault\n\n## Via CLI (`az`)\nPrecisa do PFX (cert + chave privada) e da senha.\n```bash\naz keyvault certificate import \\\n  --vault-name MEUKEYVAULT \\\n  --name meu-certificado \\\n  --file certificado.pfx \\\n  --password "SENHA_DO_PFX"\n```\nSem senha (PEM com chave, sem criptografia) funciona do mesmo jeito, só sem `--password`.\n\n## Via API REST\n```\nPUT https://MEUKEYVAULT.vault.azure.net/certificates/meu-certificado/import?api-version=7.4\nAuthorization: Bearer <token>\nContent-Type: application/json\n\n{\n  "value": "<PFX em base64>",\n  "pwd": "SENHA_DO_PFX"\n}\n```\nToken via `az account get-access-token --resource https://vault.azure.net`.\n\n## Rotação (renovação)\nReimportar com o mesmo `--name` cria uma **nova versão** — versões antigas continuam\ndisponíveis (útil pra rollback) e a versão mais recente vira a "current" automaticamente\npros consumidores que buscam sem pinar versão específica.\n\n## Validação\n```bash\naz keyvault certificate show --vault-name MEUKEYVAULT --name meu-certificado \\\n  --query "{thumbprint: x509ThumbprintHex, expires: attributes.expires}"\n```\n\n## Checklist pós-instalação\n- [ ] Aplicação/serviço aponta pro Key Vault com a permissão correta (RBAC ou Access Policy — `get`/`list` no mínimo)\n- [ ] Se o consumidor pina versão, atualizar a referência pra nova versão\n- [ ] Registrar local de instalação na demanda (aba Demandas)\n\n> Automatizável de ponta a ponta (CLI/API/SDK) — não exige acesso manual ao portal.\n',
+    },
+    {
+        "title": 'Instalação de certificado — AWS Certificate Manager e Secrets Manager',
+        "category": 'manual',
+        "content_md": '# Instalação de certificado — AWS ACM e Secrets Manager\n\n## AWS Certificate Manager (ACM) — importar certificado de terceiros\nACM não emite o certificado pra você aqui (isso é o fluxo de geração normal) — este é o\nfluxo de **importar** um certificado já emitido por uma CA externa, pra usar em\nALB/CloudFront/API Gateway etc.\n```bash\naws acm import-certificate \\\n  --certificate fileb://certificado.pem \\\n  --private-key fileb://chave.pem \\\n  --certificate-chain fileb://cadeia.pem\n```\nGuarde o `CertificateArn` retornado.\n\n### Renovar (reimportar sobre o mesmo ARN)\n```bash\naws acm import-certificate \\\n  --certificate-arn arn:aws:acm:regiao:conta:certificate/xxxx \\\n  --certificate fileb://novo-certificado.pem \\\n  --private-key fileb://nova-chave.pem \\\n  --certificate-chain fileb://cadeia.pem\n```\nServiços que já referenciam o ARN (ALB listener, CloudFront distribution) atualizam\nautomaticamente — não precisa trocar a referência.\n\n## AWS Secrets Manager — guardar PFX/chave pra app buscar em runtime\nÚtil quando a aplicação não roda atrás de um recurso gerenciado pela AWS que aceite ACM\ndireto (ex: app própria em EC2/ECS que lê o cert do código).\n```bash\n# criar\naws secretsmanager create-secret --name meu-certificado \\\n  --secret-binary fileb://certificado.pfx\n\n# atualizar (renovação)\naws secretsmanager put-secret-value --secret-id meu-certificado \\\n  --secret-binary fileb://certificado-novo.pfx\n```\n\n## Validação\n```bash\naws acm describe-certificate --certificate-arn arn:aws:acm:... \\\n  --query "Certificate.{status:Status,expires:NotAfter}"\n```\n\n## Checklist pós-instalação\n- [ ] ARN correto associado ao listener/distribution (ACM) ou secret referenciado pela app (Secrets Manager)\n- [ ] Certificado no ACM está `ISSUED` (não `PENDING_VALIDATION`)\n- [ ] Registrar local de instalação na demanda (aba Demandas)\n\n> Automatizável de ponta a ponta (CLI/API/SDK/Terraform). ACM cuida de renovação\n> automática só pros certificados que ele mesmo emite — os importados precisam ser\n> reimportados manualmente ou via automação antes de vencer.\n',
+    },
+    {
+        "title": 'Instalação de certificado — Mainframe RACDCERT (RACF / z/OS)',
+        "category": 'manual',
+        "content_md": "# Instalação de certificado — RACDCERT (RACF / z/OS)\n\n> Comandos TSO, executados por quem tem autoridade RACF (normalmente time de segurança\n> mainframe). Sintaxe pode variar por versão do RACF/z/OS — confirme com o time\n> responsável antes de rodar em produção.\n\n## 1. Transferir o certificado pro mainframe\nO arquivo (PFX ou PEM) precisa chegar como dataset z/OS — via FTP/SFTP em modo **binário**\n(PFX) ou texto com conversão de code page (PEM), ou colado direto num dataset PDS.\n\n## 2. Importar um PKCS#12 (cert + chave junto) direto num keyring\n```\nRACDCERT ID(userid) ADD('HLQ.CERT.PFXDATA') PASSWORD('senha-do-pfx') +\n    WITHLABEL('meu-certificado') TRUST\n```\n\n## 3. Ou importar cert (sem chave) e conectar a um keyring existente\n```\nRACDCERT ID(userid) ADD('HLQ.CERT.CERDATA') WITHLABEL('meu-certificado') TRUST\n\nRACDCERT ID(userid) CONNECT(LABEL('meu-certificado') RING(meu-keyring) DEFAULT)\n```\n\n## 4. Criar o keyring, se ainda não existir\n```\nRACDCERT ID(userid) ADDRING(meu-keyring)\n```\n\n## Listar / conferir\n```\nRACDCERT ID(userid) LIST\nRACDCERT ID(userid) LISTRING(meu-keyring)\n```\n\n## Checklist pós-instalação\n- [ ] Certificado conectado (`CONNECT`) ao keyring correto, com `DEFAULT` se for o principal\n- [ ] `LISTRING` confere o certificado esperado, sem duplicidade\n- [ ] Certificado antigo removido/desconectado do keyring após validar o novo (`RACDCERT REMOVE`)\n- [ ] Registrar local de instalação na demanda (aba Demandas)\n\n> Normalmente **manual** — exige acesso RACF/TSO restrito a poucas pessoas e costuma\n> passar por controle de mudança formal. Tecnicamente dá pra automatizar (JCL batch com\n> IKJEFT01 rodando os comandos RACDCERT, ou REXX), mas a maioria das organizações mantém\n> esse passo manual por política de segurança do mainframe, não por limitação técnica.\n",
+    },
+    {
+        "title": 'Instalação de certificado — Azion Edge Certificates',
+        "category": 'manual',
+        "content_md": '# Instalação de certificado — Azion (Edge Certificates)\n\n> Azion reestruturou CLI e API algumas vezes (`azioncli` → `azion`, v3 → v4 da API) —\n> confirme os nomes exatos de comando/endpoint na documentação oficial atual antes de\n> automatizar; o fluxo abaixo é o padrão geral.\n\n## Via API\n```\nPOST https://api.azion.com/v4/edge_certificates\nAuthorization: Token <seu-token>\nContent-Type: application/json\n\n{\n  "name": "meu-certificado",\n  "certificate": "<conteúdo do .crt/cadeia em PEM>",\n  "private_key": "<conteúdo da chave privada em PEM>"\n}\n```\nAssocie o certificate (pelo id retornado) ao domain/edge application correspondente.\n\n## Via CLI\n```bash\nazion certificates create \\\n  --name "meu-certificado" \\\n  --certificate certificado.pem \\\n  --private-key chave.pem\n```\n(confira `azion certificates --help` na versão instalada — os flags mudaram entre versões)\n\n## Validação\n```bash\ncurl -s https://api.azion.com/v4/edge_certificates/<id> \\\n  -H "Authorization: Token <token>" | jq \'.results.{name,validity}\'\n```\n\n## Checklist pós-instalação\n- [ ] Certificado associado ao domain/edge application certo\n- [ ] Propagação no edge concluída (pode levar alguns minutos)\n- [ ] Registrar local de instalação na demanda (aba Demandas)\n\n> Automatizável via API/CLI — igual aos outros CDNs/edge, é só cuidar da versão da CLI\n> usada no script de automação.\n',
+    },
+    {
+        "title": 'Instalação de certificado — Windows Server (repositório de certificados)',
+        "category": 'manual',
+        "content_md": '# Instalação de certificado — Windows Server (repositório de certificados)\n\nComplementa o manual de IIS — aqui é o import genérico no repositório do Windows,\nusado por qualquer serviço que leia certificado do *certificate store* (não só IIS):\nRDP, SQL Server, serviços .NET próprios, etc.\n\n## Via PowerShell (recomendado — silencioso, scriptável)\n```powershell\n$pwd = ConvertTo-SecureString -String "SENHA_DO_PFX" -Force -AsPlainText\nImport-PfxCertificate -FilePath certificado.pfx `\n  -CertStoreLocation Cert:\\LocalMachine\\My -Password $pwd\n```\n\n## Via certutil\n```cmd\ncertutil -f -p "SENHA_DO_PFX" -importPFX certificado.pfx\n```\n\n## Conferir o thumbprint instalado\n```powershell\nGet-ChildItem Cert:\\LocalMachine\\My |\n  Where-Object { $_.Subject -like "*dominio.com.br*" } |\n  Select-Object Subject, Thumbprint, NotAfter\n```\n\n## Usar num serviço específico (exemplo: RDP)\n```powershell\n$thumb = "COLE_O_THUMBPRINT_AQUI"\nSet-ItemProperty -Path \'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp\' `\n  -Name SSLCertificateSHA1Hash -Value $thumb\n```\n\n## Remover certificado antigo (depois de validar o novo)\n```powershell\nRemove-Item -Path "Cert:\\LocalMachine\\My\\THUMBPRINT_ANTIGO"\n```\n\n## Checklist pós-instalação\n- [ ] Certificado aparece em `Cert:\\LocalMachine\\My` com o thumbprint esperado\n- [ ] Serviço consumidor reiniciado/reconfigurado pra usar o novo thumbprint, se necessário\n- [ ] Certificado antigo removido após validação\n- [ ] Registrar local de instalação na demanda (aba Demandas)\n\n> Automatizável via PowerShell Remoting (`Invoke-Command`) ou Ansible (módulo\n> `win_certificate_store` / `community.windows`) — dá pra rodar em lote em vários\n> servidores sem acesso manual a cada um.\n',
+    },
+    {
+        "title": 'Instalação de certificado — Akamai (CPS)',
+        "category": 'manual',
+        "content_md": '# Instalação de certificado — Akamai CPS (Certificate Provisioning System)\n\n> Fluxo de mudança em várias etapas (draft → submissão → validação → deploy staging →\n> deploy produção). Nomes de comando/endpoint podem variar por versão do Akamai CLI —\n> confirme com `akamai cps --help` antes de automatizar de verdade.\n\n## Pré-requisito\nCertificado gerenciado dentro de um "enrollment" no CPS — cada domínio/SAN set tem um\n`enrollment-id` próprio.\n\n## Via Akamai CLI\n```bash\n# baixa o enrollment atual como base pro update\nakamai cps retrieve-enrollment <enrollment-id> --json enrollment.json\n\n# edita enrollment.json com o novo certificado/chave (formato "third party CSR"\n# ou "BYOC" — bring your own certificate) e envia\nakamai cps update <enrollment-id> --force --json enrollment.json\n\n# acompanha o status da mudança\nakamai cps status <enrollment-id>\n```\n\n## Via API (Akamai OPEN API — CPS v2)\n```\nPOST /cps/v2/enrollments/{enrollmentId}/change-management\nAuthorization: EG1-HMAC-SHA256 <assinatura>\nContent-Type: application/vnd.akamai.cps.change-management.v1+json\n\n{ "certificatesAndTrustChains": [ { "certificate": "<PEM>", "trustChain": "<PEM>" } ] }\n```\nAssinatura EdgeGrid (HMAC) — normalmente feita pela lib oficial (`.edgerc` + SDK), não à mão.\n\n## Validação\n```bash\nakamai cps status <enrollment-id>\n```\nConfere se o deploy chegou em `active` no ambiente de produção (staging primeiro).\n\n## Checklist pós-instalação\n- [ ] Deploy validado em staging antes de produção\n- [ ] Status do enrollment em `active`/`deployed`\n- [ ] Registrar local de instalação na demanda (aba Demandas)\n\n> Automatizável via API/CLI, mas o processo em si é multi-etapa (staging antes de\n> produção é obrigatório no fluxo padrão da Akamai) — dá pra scriptar o fluxo inteiro,\n> só não pula as etapas de validação.\n',
+    },
+]
+
 NOW = dt.datetime.now(dt.timezone.utc)
 random.seed(42)
 
@@ -221,6 +254,15 @@ def insert_req(conn, req_no, cn, env, status, notes, created, *, demand_type="ge
     return cur.lastrowid
 
 
+def insert_doc(conn, title, category, content_md):
+    exists = conn.execute("SELECT id FROM docs WHERE title=?", (title,)).fetchone()
+    if exists:
+        return False
+    conn.execute("INSERT INTO docs (title, category, content_md) VALUES (?,?,?)",
+                 (title, category, content_md))
+    return True
+
+
 def insert_user(conn, username, display_name, role, password):
     pwd_hash, salt = hash_password(password)
     conn.execute(
@@ -244,6 +286,11 @@ def create(conn):
     for username, display_name, role in DEMO_USERS:
         insert_user(conn, username, display_name, role, f"{username}@2026")
         n_users += 1
+
+    n_docs = 0
+    for doc in DEMO_DOCS:
+        if insert_doc(conn, doc["title"], doc["category"], doc["content_md"]):
+            n_docs += 1
 
     n_reqs = n_certs = 0
     partner_acme = {"name": "ACME Gateway Ltda", "email": "ti@acmegateway.com.br", "reg": "MAT-88213"}
@@ -518,7 +565,7 @@ def create(conn):
         "(SELECT id FROM install_tasks WHERE req_id IN "
         "(SELECT id FROM reqs WHERE notes LIKE '%[demo]%'))").fetchone()[0]
     conn.commit()
-    print(f"OK — {n_users} usuários, {n_reqs} demandas, {n_certs + 3} certificados (3 CAs, arquivos reais em disco), "
+    print(f"OK — {n_users} usuários, {n_docs} manuais, {n_reqs} demandas, {n_certs + 3} certificados (3 CAs, arquivos reais em disco), "
           f"{len(csr_examples) + 4} CSRs no repositório, {n_tasks} tarefas de checklist "
           f"({n_evidence} com evidência anexada) e 30 eventos de atividade criados.")
 
