@@ -17,7 +17,7 @@ description: |
 O CertHub é uma aplicação web interna de gerenciamento do ciclo de vida de certificados digitais X.509. Serve a equipe de criptografia para:
 
 - Gerenciar demandas de emissão, renovação e revogação de certificados
-- Controlar locais de instalação e Work Orders (WO/CRQ) vinculadas
+- Controlar locais de instalação e o ticket de mudança (WO/CRQ) vinculado, com checklist de ativação
 - Inventariar certificados com ciclo de vida (pedido → instalado → fim_de_vida)
 - Gerar e decodificar CSRs
 - Validar cadeias de certificação
@@ -37,7 +37,7 @@ O CertHub é uma aplicação web interna de gerenciamento do ciclo de vida de ce
 
 ```
 /home/bruno/cert-manager/
-├── plan.md              # Plano de desenvolvimento (referência principal)
+├── README.md             # Visão geral, como rodar, abas da aplicação
 ├── .gemini/
 │   ├── rules.md         # Regras e convenções do projeto
 │   └── skills/          # Skills do projeto
@@ -71,7 +71,7 @@ python run.py              # ou: uvicorn app.main:app --reload
 reqs             — Demandas (REQ0012345)
 certificates     — Certificados X.509 importados
 install_locations — Locais de instalação de certificados
-work_orders      — WOs/CRQs vinculadas às demandas
+install_tasks    — Checklist de ativação de CRQ (tarefas por demanda)
 csrs             — CSRs geradas
 users            — Usuários da aplicação
 activity_log     — Histórico de ações
@@ -146,19 +146,17 @@ Em `app/static/index.html`:
 </a>
 ```
 
-## Épicos Ativos (ver plan.md para detalhes)
+## Estado do Projeto
 
-1. **ÉPICO 1** — Remoção de Operações em Lote *(alta prioridade)*
-2. **ÉPICO 2** — Sistema de Usuários com autenticação e roles
-3. **ÉPICO 3** — Ciclo de Vida WO/CRQ (Geração → Instalação)
-4. **ÉPICO 4** — Lifecycle dos Certificados (6 estados)
-5. **ÉPICO 5** — Integração OpenSSL (Toolbox)
-6. **ÉPICO 6** — Refatorações gerais
-7. **ÉPICO 7** — Agentes e Skills de desenvolvimento
+Sistema de usuários com autenticação/roles, ciclo de vida Geração → Instalação (mesma
+REQ muda `demand_type`, nunca cria uma segunda linha), checklist de ativação de CRQ,
+trilha de auditoria (`activity_log` + `views.auditoria`) e decoder geral (CSR/cert/
+chave/PFX) já estão implementados. Operações em lote e o módulo dedicado de WO/CRQ
+foram avaliados e removidos — WO/CRQ hoje é só campo livre (`external_wo`/`external_crq`)
+dentro do fluxo de instalação, sem router próprio.
 
 ## Dicas Importantes
 
-- **Sempre ler `plan.md`** antes de iniciar uma tarefa para entender o contexto
 - **Nunca usar `shell=True`** em subprocess — segurança
 - **Sempre escapar** dados do servidor com `esc()` no frontend antes de interpolar em HTML
 - **Sempre fechar** a conexão com `conn.close()` após uso

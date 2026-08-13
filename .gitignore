@@ -3,6 +3,8 @@ __pycache__/
 .venv/
 venv/
 data/certhub.db
+data/*.db-shm
+data/*.db-wal
 data/files/
 *.key
 *.pfx

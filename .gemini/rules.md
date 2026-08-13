@@ -58,13 +58,13 @@ app/
 
 | Contexto | Convenção | Exemplo |
 |----------|-----------|---------|
-| Tabelas SQL | snake_case singular | `work_order`, `certificate` |
+| Tabelas SQL | snake_case singular | `install_location`, `certificate` |
 | Colunas SQL | snake_case | `created_at`, `req_id` |
-| Routers Python | snake_case | `work_orders.py` |
-| Funções Python | snake_case | `create_work_order()` |
-| Endpoints URL | kebab-case | `/work-orders/{id}` |
-| Views JS | camelCase | `views.workOrders` |
-| IDs HTML | kebab-case | `id="wo-number"` |
+| Routers Python | snake_case | `checklists.py` |
+| Funções Python | snake_case | `update_install_task()` |
+| Endpoints URL | kebab-case | `/install-tasks/{id}` |
+| Views JS | camelCase | `views.instalacao` |
+| IDs HTML | kebab-case | `id="au-search"` |
 | Classes CSS | kebab-case | `.badge-instalado` |
 
 ---
