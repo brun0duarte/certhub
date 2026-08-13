@@ -5,7 +5,9 @@ Uso:
     .venv/bin/python scripts/demo_data.py --remove  # remove tudo que foi criado
 
 Marcadores usados na remoção: reqs.notes contém [demo], certificates.source='demo',
-csrs.subject contém O=BancoFic, activity_log.detail contém [demo].
+csrs.subject contém O=BancoFic, activity_log.detail contém [demo]. Os usuários de
+demonstração (alex, bruno, carlos, davi, leonardo) NÃO são removidos por --remove —
+mesma política de scripts/reset_seed.py, que preserva contas de usuário.
 """
 import datetime as dt
 import random
@@ -21,6 +23,15 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from app.db import get_db, get_setting, init_db
 from app.services import certparse, folders
+from app.services.auth import hash_password
+
+DEMO_USERS = [
+    ("alex", "Alex Souza", "admin"),
+    ("bruno", "Bruno Duarte", "admin"),
+    ("carlos", "Carlos Lima", "operator"),
+    ("davi", "Davi Nogueira", "operator"),
+    ("leonardo", "Leonardo Alves", "viewer"),
+]
 
 NOW = dt.datetime.now(dt.timezone.utc)
 random.seed(42)
@@ -210,6 +221,14 @@ def insert_req(conn, req_no, cn, env, status, notes, created, *, demand_type="ge
     return cur.lastrowid
 
 
+def insert_user(conn, username, display_name, role, password):
+    pwd_hash, salt = hash_password(password)
+    conn.execute(
+        """INSERT OR IGNORE INTO users (username, display_name, email, role, password_hash, salt)
+           VALUES (?,?,?,?,?,?)""",
+        (username, display_name, f"{username}@certhub.local", role, pwd_hash, salt))
+
+
 def create(conn):
     # --- cadeias: raiz + emissora internas e uma CA "pública" ---
     root, root_key = make_cert("BancoFic Root CA G1", ca=True, days=3650, days_ago=1500)
@@ -220,6 +239,11 @@ def create(conn):
     root_id = insert_cert(conn, root, cert_category="ac_interna_apl_prd")
     issuing_id = insert_cert(conn, issuing, parent_id=root_id, cert_category="ac_interna_apl_prd")
     pub_ca_id = insert_cert(conn, pub_ca, cert_category="sectigo_ov")
+
+    n_users = 0
+    for username, display_name, role in DEMO_USERS:
+        insert_user(conn, username, display_name, role, f"{username}@2026")
+        n_users += 1
 
     n_reqs = n_certs = 0
     partner_acme = {"name": "ACME Gateway Ltda", "email": "ti@acmegateway.com.br", "reg": "MAT-88213"}
@@ -494,7 +518,7 @@ def create(conn):
         "(SELECT id FROM install_tasks WHERE req_id IN "
         "(SELECT id FROM reqs WHERE notes LIKE '%[demo]%'))").fetchone()[0]
     conn.commit()
-    print(f"OK — {n_reqs} demandas, {n_certs + 3} certificados (3 CAs, arquivos reais em disco), "
+    print(f"OK — {n_users} usuários, {n_reqs} demandas, {n_certs + 3} certificados (3 CAs, arquivos reais em disco), "
           f"{len(csr_examples) + 4} CSRs no repositório, {n_tasks} tarefas de checklist "
           f"({n_evidence} com evidência anexada) e 30 eventos de atividade criados.")
 
