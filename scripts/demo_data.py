@@ -1,8 +1,9 @@
 """Popula o CertHub com dados fictícios (domínio bancofic.com.br) para demonstração.
 
 Uso:
-    .venv/bin/python scripts/demo_data.py           # cria os dados
-    .venv/bin/python scripts/demo_data.py --remove  # remove tudo que foi criado
+    .venv/bin/python scripts/demo_data.py             # cria os dados (22 exemplos narrativos + 150 aleatórios)
+    .venv/bin/python scripts/demo_data.py --bulk 500  # troca a quantidade de certificados aleatórios (0 desativa)
+    .venv/bin/python scripts/demo_data.py --remove    # remove tudo que foi criado
 
 Marcadores usados na remoção: reqs.notes contém [demo], certificates.source='demo',
 csrs.subject contém O=BancoFic, activity_log.detail contém [demo]. Os usuários de
@@ -271,7 +272,115 @@ def insert_user(conn, username, display_name, role, password):
         (username, display_name, f"{username}@certhub.local", role, pwd_hash, salt))
 
 
-def create(conn):
+BULK_SUBDOMAINS = [
+    "app", "srv", "web", "auth", "pay", "checkout", "admin", "intra", "gw", "edge",
+    "cache", "queue", "report", "batch", "crm", "erp", "hr", "billing", "notif",
+    "search", "upload", "media", "cdn", "mobile", "partner", "sandbox", "stage",
+    "backup", "sync", "log", "metrics", "chat", "voip", "sftp", "vpn2", "ldap",
+    "core", "risco", "fraude", "onboarding", "kyc",
+]
+BULK_DOMAINS = (["bancofic.com.br"] * 7 + ["fintechx.com.br"] * 1
+                + ["acmegateway.com.br"] * 1 + ["logisticay.com.br"] * 1)
+BULK_ENVS = ["PRD"] * 5 + ["HMP"] * 2 + ["TQS"] * 2 + ["DES"] * 1
+BULK_DEMAND_TYPES = (["geracao"] * 4 + ["instalacao"] * 3 + ["recebimento"] * 1
+                      + ["renovacao"] * 2 + ["revogacao"] * 1)
+BULK_KEY_TYPES = ["rsa2048"] * 6 + ["rsa4096"] * 2 + ["ec256"] * 2 + ["ec384"] * 1
+BULK_CERT_CATS_INT = ["ac_interna_apl_prd", "ac_icp_testes", "outro"]
+BULK_CERT_CATS_PUB = ["sectigo_dv", "sectigo_ov", "sectigo_ev", "apple", "bandeiras", "sepro"]
+BULK_INSTALL_TARGETS = [
+    ("SRVWEB{:02d}", "IIS binding 443 · LocalMachine\\My"),
+    ("SRVAPP{:02d}", "nginx /etc/ssl/certs"),
+    ("SRVTOM{:02d}", "Tomcat conf/keystore.jks"),
+    ("F5-LTM-{:02d}", "clientssl"),
+    ("KEYVAULT-{:02d}", "Azure Key Vault"),
+    ("ACM-{:02d}", "AWS Certificate Manager"),
+    ("MAINFRAME-{:02d}", "RACDCERT keyring"),
+    ("AZION-{:02d}", "Edge Certificates"),
+    ("AKAMAI-{:02d}", "CPS enrollment"),
+]
+
+
+def generate_bulk(conn, add_req, add_leaf_cert, n=150, start_at=13000):
+    """Gera N demandas/certificados aleatórios reaproveitando add_req/add_leaf_cert —
+    pra popular o banco em volume sem escrever exemplo por exemplo à mão."""
+    for i in range(n):
+        env = random.choice(BULK_ENVS)
+        demand_type = random.choice(BULK_DEMAND_TYPES)
+        domain = random.choice(BULK_DOMAINS)
+        sub = random.choice(BULK_SUBDOMAINS)
+        cn = f"{sub}-{i:04d}.{domain}"
+        ownership = random.choices(["interno", "externo"], weights=[8, 2])[0]
+        partner = None
+        if ownership == "externo":
+            partner = {"name": f"Parceiro {sub.capitalize()} {i:04d}",
+                       "email": f"ti-{i:04d}@{domain}", "reg": f"MAT-{random.randint(10000, 99999)}"}
+
+        if demand_type == "instalacao":
+            status = random.choices(["aberta", "instalado", "concluida"], weights=[1, 5, 3])[0]
+        else:
+            status = random.choices(
+                ["aberta", "csr_gerada", "cert_emitido", "concluida", "cancelada"],
+                weights=[2, 2, 2, 3, 1])[0]
+
+        external_wo = external_crq = ""
+        if demand_type == "instalacao" and status != "aberta":
+            if env == "PRD":
+                external_crq = f"CRQ00{random.randint(60000, 99999)}"
+            else:
+                external_wo = f"WO00{random.randint(50000, 99999)}"
+
+        rid, created = add_req(
+            req_no=f"REQ00{start_at + i}", cn=cn, env=env, status=status,
+            notes=f"[bulk] {demand_type} · {sub}", demand_type=demand_type,
+            ownership=ownership, partner=partner,
+            external_wo=external_wo, external_crq=external_crq)
+
+        has_cert = status not in ("aberta", "csr_gerada", "cancelada")
+        if not has_cert:
+            continue
+
+        issuer_kind = "pub" if (ownership == "externo" or random.random() < 0.3) else "int"
+        cert_category = (
+            "parceiro_externo" if ownership == "externo"
+            else random.choice(BULK_CERT_CATS_PUB if issuer_kind == "pub" else BULK_CERT_CATS_INT))
+        if status == "instalado":
+            lifecycle_status = "instalado"
+        elif demand_type == "revogacao":
+            lifecycle_status = random.choice(["excluir", "fim_de_vida"])
+        else:
+            lifecycle_status = random.choice(["em_inventario", "reservado"])
+
+        locs = []
+        if demand_type == "instalacao" and status in ("instalado", "concluida"):
+            for _ in range(random.randint(1, 2)):
+                name_fmt, path = random.choice(BULK_INSTALL_TARGETS)
+                locs.append((name_fmt.format(random.randint(1, 20)), path))
+
+        cert_id = add_leaf_cert(
+            rid, cn, created,
+            issuer_kind=issuer_kind,
+            key_type=random.choice(BULK_KEY_TYPES),
+            days=random.choice([-60, -20, -5, 10, 25, 45, 80, 150, 300, 500]),
+            days_ago=random.randint(20, 400),
+            sans=[cn],
+            client=random.random() < 0.15,
+            lifecycle_status=lifecycle_status,
+            cert_category=cert_category,
+            ownership=ownership,
+            partner=partner,
+            locs=locs,
+        )
+        if demand_type == "instalacao" and status in ("instalado", "concluida") and env == "PRD":
+            seed_tasks(conn, rid)
+            if random.random() < 0.6:
+                for title in ("Preparo", "Ativação", "Teste", "Plano de retorno"):
+                    if random.random() < 0.7:
+                        set_task(conn, rid, title,
+                                 status=random.choices(
+                                     ["sucesso", "em_andamento", "falha"], weights=[6, 2, 1])[0])
+
+
+def create(conn, bulk_n=150):
     # --- cadeias: raiz + emissora internas e uma CA "pública" ---
     root, root_key = make_cert("BancoFic Root CA G1", ca=True, days=3650, days_ago=1500)
     issuing, issuing_key = make_cert("BancoFic Issuing CA TLS 01", issuer=root,
@@ -528,6 +637,10 @@ def create(conn):
                   sans=["edi.logisticay.com.br"], lifecycle_status="em_inventario",
                   cert_category="parceiro_externo", ownership="externo", partner=partner_logistica)
 
+    # --- volume: N demandas/certificados aleatórios além dos 22 exemplos narrativos acima ---
+    if bulk_n:
+        generate_bulk(conn, add_req, add_leaf_cert, n=bulk_n)
+
     # --- CSRs no repositório (variedade de tipos de chave) ---
     from cryptography.hazmat.primitives.serialization import Encoding
     csr_examples = [
@@ -592,5 +705,8 @@ if __name__ == "__main__":
         if conn.execute("SELECT 1 FROM certificates WHERE source='demo' LIMIT 1").fetchone():
             print("Dados demo já existem — rode com --remove antes de recriar.")
             sys.exit(1)
-        create(conn)
+        bulk_n = 150
+        if "--bulk" in sys.argv:
+            bulk_n = int(sys.argv[sys.argv.index("--bulk") + 1])
+        create(conn, bulk_n=bulk_n)
     conn.close()
