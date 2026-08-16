@@ -11,17 +11,19 @@ KEY_TYPES = {
 }
 
 
-def generate_key_and_csr(cn: str, sans: list[str] | None = None, key_type: str = "rsa2048",
-                         org: str = "", country: str = "",
-                         state: str = "", locality: str = "",
-                         ou: str = "", email: str = "") -> tuple[str, str]:
-    """Retorna (key_pem, csr_pem)."""
+def generate_key(key_type: str = "rsa2048"):
+    """Gera uma chave privada (objeto cryptography, não PEM) do tipo pedido."""
     algo, size = KEY_TYPES.get(key_type, KEY_TYPES["rsa2048"])
     if algo == "EC":
-        key = ec.generate_private_key(ec.SECP256R1())
-    else:
-        key = rsa.generate_private_key(public_exponent=65537, key_size=size)
+        return ec.generate_private_key(ec.SECP256R1())
+    return rsa.generate_private_key(public_exponent=65537, key_size=size)
 
+
+def build_csr(key, cn: str, sans: list[str] | None = None,
+              org: str = "", country: str = "",
+              state: str = "", locality: str = "",
+              ou: str = "", email: str = "") -> str:
+    """Monta e assina uma CSR pra uma chave já existente. Retorna csr_pem."""
     name_attrs = [x509.NameAttribute(NameOID.COMMON_NAME, cn)]
     if org:
         name_attrs.append(x509.NameAttribute(NameOID.ORGANIZATION_NAME, org))
@@ -47,13 +49,26 @@ def generate_key_and_csr(cn: str, sans: list[str] | None = None, key_type: str =
     )
 
     csr = builder.sign(key, hashes.SHA256())
-    key_pem = key.private_bytes(
+    return csr.public_bytes(serialization.Encoding.PEM).decode()
+
+
+def key_to_pem(key) -> str:
+    return key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
-    csr_pem = csr.public_bytes(serialization.Encoding.PEM).decode()
-    return key_pem, csr_pem
+
+
+def generate_key_and_csr(cn: str, sans: list[str] | None = None, key_type: str = "rsa2048",
+                         org: str = "", country: str = "",
+                         state: str = "", locality: str = "",
+                         ou: str = "", email: str = "") -> tuple[str, str]:
+    """Retorna (key_pem, csr_pem)."""
+    key = generate_key(key_type)
+    csr_pem = build_csr(key, cn, sans, org=org, country=country,
+                         state=state, locality=locality, ou=ou, email=email)
+    return key_to_pem(key), csr_pem
 
 
 def build_certreq_inf(cn: str, sans: list[str] | None = None, key_type: str = "rsa2048",

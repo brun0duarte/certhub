@@ -44,42 +44,46 @@ def _link_parent(conn, cert_id: int, issuer_dn: str, subject_dn: str):
 
 @router.get("/certs")
 def list_certs(search: str = "", expiring_days: int | None = None,
-               cert_type: str = "", issuer_cn: str = "", lifecycle: str = "", env: str = ""):
+               cert_type: str = "", issuer_cn: str = "", lifecycle: str = "", env: str = "",
+               page: int = 1, page_size: int = 50):
     conn = get_db()
-    sql = """SELECT c.*, r.req_number, r.env,
-                    p.cn AS parent_cn,
-                    (SELECT COUNT(*) FROM certificates f WHERE f.parent_id = c.id) AS issued_count,
-                    CAST(julianday(c.not_after) - julianday('now','localtime') AS INTEGER) AS days_left
-             FROM certificates c
+    where = """FROM certificates c
              LEFT JOIN reqs r ON r.id = c.req_id
              LEFT JOIN certificates p ON p.id = c.parent_id
              WHERE 1=1"""
     params = []
     if search:
-        sql += " AND (c.cn LIKE ? OR c.sans LIKE ? OR c.issuer LIKE ? OR r.req_number LIKE ?)"
+        where += " AND (c.cn LIKE ? OR c.sans LIKE ? OR c.issuer LIKE ? OR r.req_number LIKE ?)"
         params += [f"%{search}%"] * 4
     if expiring_days is not None:
-        sql += " AND julianday(c.not_after) - julianday('now','localtime') <= ?"
+        where += " AND julianday(c.not_after) - julianday('now','localtime') <= ?"
         params.append(expiring_days)
     if cert_type:
-        sql += " AND c.cert_type = ?"
+        where += " AND c.cert_type = ?"
         params.append(cert_type)
     if issuer_cn:
-        sql += " AND c.issuer_cn = ?"
+        where += " AND c.issuer_cn = ?"
         params.append(issuer_cn)
     if lifecycle:
-        sql += " AND c.lifecycle_status = ?"
+        where += " AND c.lifecycle_status = ?"
         params.append(lifecycle)
     if env:
-        sql += " AND r.env = ?"
+        where += " AND r.env = ?"
         params.append(env)
-    sql += " ORDER BY c.not_after ASC"
-    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    total = conn.execute("SELECT COUNT(*) " + where, params).fetchone()[0]
+    sql = ("""SELECT c.*, r.req_number, r.env,
+                     p.cn AS parent_cn,
+                     (SELECT COUNT(*) FROM certificates f WHERE f.parent_id = c.id) AS issued_count,
+                     CAST(julianday(c.not_after) - julianday('now','localtime') AS INTEGER) AS days_left
+              """ + where + " ORDER BY c.not_after ASC LIMIT ? OFFSET ?")
+    page = max(page, 1)
+    rows = [dict(r) for r in conn.execute(
+        sql, params + [min(page_size, 1000), (page - 1) * page_size]).fetchall()]
     issuers = [r[0] for r in conn.execute(
         """SELECT DISTINCT issuer_cn FROM certificates
            WHERE issuer_cn <> '' ORDER BY issuer_cn""").fetchall()]
     conn.close()
-    return {"certs": rows, "issuers": issuers}
+    return {"certs": rows, "issuers": issuers, "total": total}
 
 
 @router.post("/certs/relink")
@@ -303,26 +307,37 @@ def delete_cert(cert_id: int, user=Depends(require_auth)):
     conn.close()
     return {"ok": True}
 
-def _read_cert_pem(row) -> str:
-    """Relê o arquivo salvo na importação e devolve o PEM normalizado. Lança HTTPException
-    se não houver arquivo, o arquivo não existir em disco, ou não for legível sem senha."""
+def _load_cert_object(row):
+    """Relê o arquivo salvo na importação (ou o PEM guardado no banco, pra certificados
+    importados via HSM — que não têm arquivo local) e devolve o objeto x509.Certificate
+    carregado. Lança HTTPException se não houver arquivo nem PEM, o arquivo não existir em
+    disco, ou não for legível sem senha."""
     if not row["file_path"]:
-        raise HTTPException(404, "Este certificado não tem arquivo salvo (ex.: CA cadastrada manualmente).")
+        cert_pem = row["cert_pem"] if "cert_pem" in row.keys() else None
+        if not cert_pem:
+            raise HTTPException(404, "Este certificado não tem arquivo salvo (ex.: CA cadastrada manualmente).")
+        return certparse._load_x509(cert_pem.encode())
     path = Path(row["file_path"])
     if not path.exists():
         raise HTTPException(404, "Arquivo do certificado não foi encontrado em disco.")
     data = path.read_bytes()
     try:
-        cert = certparse._load_x509(data)
+        return certparse._load_x509(data)
     except ValueError:
         try:
             _key, cert, _extra = pkcs12.load_key_and_certificates(data, None)
             if cert is None:
                 raise ValueError
+            return cert
         except Exception:
             raise HTTPException(400,
                 "Não consegui ler o certificado salvo (PFX protegido por senha ou formato não "
                 "reconhecido) — use o Decoder para abrir o arquivo original com a senha.")
+
+
+def _read_cert_pem(row) -> str:
+    """Devolve o PEM normalizado do certificado salvo na importação."""
+    cert = _load_cert_object(row)
     return cert.public_bytes(serialization.Encoding.PEM).decode()
 
 
@@ -330,11 +345,24 @@ def _read_cert_pem(row) -> str:
 def get_cert_pem(cert_id: int):
     """Recupera o PEM normalizado do certificado a partir do arquivo salvo na importação."""
     conn = get_db()
-    row = conn.execute("SELECT file_path, cn FROM certificates WHERE id=?", (cert_id,)).fetchone()
+    row = conn.execute("SELECT file_path, cert_pem, cn FROM certificates WHERE id=?", (cert_id,)).fetchone()
     conn.close()
     if not row:
         raise HTTPException(404, "Certificado não encontrado")
     return {"pem": _read_cert_pem(row)}
+
+
+@router.get("/certs/{cert_id}/full")
+def get_cert_full(cert_id: int):
+    """Dados estendidos do X.509 (versão, signature algorithm, SHA256, Key Usage, EKU, etc.)
+    pra exibição de detalhe — não persistidos em banco, extraídos sob demanda do arquivo."""
+    conn = get_db()
+    row = conn.execute("SELECT file_path, cert_pem, cn FROM certificates WHERE id=?", (cert_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Certificado não encontrado")
+    cert = _load_cert_object(row)
+    return certparse.extract_extended(cert)
 
 
 def _walk_chain(conn, cert_id: int) -> list[dict]:

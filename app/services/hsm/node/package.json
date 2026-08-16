@@ -1,0 +1,15 @@
+{
+  "name": "certhub-hsm-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bridge Node.js entre o backend Python e o SDK JS oficial da Dinamo Networks (HSM).",
+  "main": "hsm-helper.js",
+  "type": "module",
+  "scripts": {
+    "start": "node hsm-helper.js"
+  },
+  "dependencies": {
+    "@dinamonetworks/hsm-dinamo": "^4.27.0",
+    "node-forge": "^1.4.0"
+  }
+}

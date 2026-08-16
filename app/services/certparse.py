@@ -111,3 +111,73 @@ def _extract(cert: x509.Certificate) -> dict:
         "key_type": key_type,
     }
 
+
+def extract_extended(cert) -> dict:
+    """Extrai campos estendidos do X.509 pra exibição de detalhe (não persistidos em DB)."""
+    result = {
+        "version": cert.version.name,  # ex: "v3"
+        "signature_algorithm": None,
+        "thumbprint_sha256": cert.fingerprint(hashes.SHA256()).hex().upper(),
+        "is_ca": False,
+        "path_length": None,
+        "key_usage": [],
+        "extended_key_usage": [],
+        "authority_key_identifier": None,
+        "subject_key_identifier": None,
+        "public_key_detail": None,
+    }
+    try:
+        result["signature_algorithm"] = cert.signature_hash_algorithm.name
+    except Exception:
+        try:
+            result["signature_algorithm"] = cert.signature_algorithm_oid._name
+        except Exception:
+            pass
+
+    try:
+        bc = cert.extensions.get_extension_for_oid(ExtensionOID.BASIC_CONSTRAINTS).value
+        result["is_ca"] = bc.ca
+        result["path_length"] = bc.path_length
+    except x509.ExtensionNotFound:
+        pass
+
+    try:
+        ku = cert.extensions.get_extension_for_oid(ExtensionOID.KEY_USAGE).value
+        flags = ["digital_signature", "content_commitment", "key_encipherment", "data_encipherment",
+                 "key_agreement", "key_cert_sign", "crl_sign"]
+        result["key_usage"] = [f for f in flags if getattr(ku, f, False)]
+    except x509.ExtensionNotFound:
+        pass
+
+    try:
+        eku = cert.extensions.get_extension_for_oid(ExtensionOID.EXTENDED_KEY_USAGE).value
+        result["extended_key_usage"] = [oid._name or oid.dotted_string for oid in eku]
+    except x509.ExtensionNotFound:
+        pass
+
+    try:
+        aki = cert.extensions.get_extension_for_oid(ExtensionOID.AUTHORITY_KEY_IDENTIFIER).value
+        if aki.key_identifier:
+            result["authority_key_identifier"] = aki.key_identifier.hex().upper()
+    except x509.ExtensionNotFound:
+        pass
+
+    try:
+        ski = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_KEY_IDENTIFIER).value
+        result["subject_key_identifier"] = ski.digest.hex().upper()
+    except x509.ExtensionNotFound:
+        pass
+
+    try:
+        pub = cert.public_key()
+        if hasattr(pub, "curve"):
+            result["public_key_detail"] = f"EC curva {pub.curve.name}"
+        elif hasattr(pub, "public_numbers"):
+            nums = pub.public_numbers()
+            if hasattr(nums, "e"):
+                result["public_key_detail"] = f"RSA expoente {nums.e}"
+    except Exception:
+        pass
+
+    return result
+

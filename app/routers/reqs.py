@@ -3,16 +3,30 @@ import json
 import re
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from ..db import REQ_STATUSES, get_db, get_setting, log_activity
+from ..db import (INSTALL_LOCATIONS, INSTALL_LOCATION_LABELS, REQ_STATUSES, REVOKE_DESTINATIONS,
+                   get_db, get_setting, log_activity)
 from ..services import folders, passwordgen
+from ..services.installers.registry import PROVIDERS
+from ..services.revocation.ac_interna import AcInternaRevocationProvider
+from ..services.revocation.internacional import InternacionalRevocationProvider
+from ..services.revocation.outros import OutrosRevocationProvider
+from ..services.revocation.serpro import SerproRevocationProvider
 from .auth import require_auth
 
 router = APIRouter(tags=["reqs"])
 REQ_FORMAT = re.compile(r"^[A-Z0-9_\-\.]{3,30}$", re.IGNORECASE)
+
+SORT_COLUMNS = {
+    "req_number": "r.req_number",
+    "env": "r.env",
+    "status": "r.status",
+    "created_at": "r.created_at",
+}
 
 
 @contextmanager
@@ -39,6 +53,26 @@ def find_existing_active_req(conn, cn: str, env: str, demand_type: str) -> dict 
     return dict(zip(("id", "req_number", "cn", "env", "status", "demand_type"), row))
 
 
+def find_existing_active_revocation(conn, cn: str, env: str, revoke_cert_id: int | None) -> dict | None:
+    """Demanda de revogação em aberto (não concluída/cancelada) pro mesmo certificado
+    (revoke_cert_id) ou, na ausência de vínculo, mesmo CN+ambiente — aviso não-bloqueante
+    (FR-010, diferente do bloqueio rígido de geracao/recebimento)."""
+    if revoke_cert_id:
+        row = conn.execute(
+            "SELECT id, req_number, cn, env, status, created_at FROM reqs "
+            "WHERE demand_type='revogacao' AND revoke_cert_id=? AND status NOT IN ('concluida','cancelada')",
+            (revoke_cert_id,)
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT id, req_number, cn, env, status, created_at FROM reqs "
+            "WHERE demand_type='revogacao' AND cn=? AND env=? AND revoke_cert_id IS NULL "
+            "AND status NOT IN ('concluida','cancelada')",
+            (cn, env)
+        ).fetchone()
+    return dict(row) if row else None
+
+
 class ReqIn(BaseModel):
     req_number: str | None = None
     cn: str
@@ -54,6 +88,10 @@ class ReqIn(BaseModel):
     partner_email: str = ""
     partner_registration: str = ""
     ownership: str = "interno"
+    revoke_destination: str = ""
+    revoke_destination_other: str = ""
+    revoke_cert_id: int | None = None
+    force_duplicate: bool = False
 
 
 class ReqUpdate(BaseModel):
@@ -69,6 +107,9 @@ class ReqUpdate(BaseModel):
     partner_email: str | None = None
     partner_registration: str | None = None
     ownership: str | None = None
+    revoke_destination: str | None = None
+    revoke_destination_other: str | None = None
+    revoke_cert_id: int | None = None
 
 
 
@@ -86,34 +127,52 @@ class LocationStatusUpdate(BaseModel):
     status: str  # 'pendente', 'instalado', 'falhou'
 
 
+
+
 def _auto_password(conn) -> str:
     policy = json.loads(get_setting(conn, "password_policy"))
     return passwordgen.generate(**policy)
 
 
 @router.get("/reqs")
-def list_reqs(search: str = "", env: str = "", status: str = "", demand_type: str = ""):
+def list_reqs(search: str = "", env: str = "", status: str = "", demand_type: str = "",
+              exclude_status: str = "", revoke_destination: str = "",
+              sort: str = "created_at", dir: str = "desc",
+              page: int = 1, page_size: int = 1000):
     with db_conn() as conn:
-        sql = """SELECT r.*,
-                        (SELECT COUNT(*) FROM certificates c WHERE c.req_id = r.id) AS cert_count,
-                        (SELECT COUNT(*) FROM install_locations l WHERE l.req_id = r.id) AS location_count
-                 FROM reqs r WHERE 1=1"""
+        where = " WHERE 1=1"
         params = []
         if search:
-            sql += " AND (r.req_number LIKE ? OR r.cn LIKE ? OR r.notes LIKE ?)"
+            where += " AND (r.req_number LIKE ? OR r.cn LIKE ? OR r.notes LIKE ?)"
             params += [f"%{search}%"] * 3
         if env:
-            sql += " AND r.env = ?"
+            where += " AND r.env = ?"
             params.append(env)
         if status:
-            sql += " AND r.status = ?"
+            where += " AND r.status = ?"
             params.append(status)
+        if revoke_destination:
+            where += " AND r.revoke_destination = ?"
+            params.append(revoke_destination)
         if demand_type:
             types = [t.strip() for t in demand_type.split(',')]
-            sql += " AND r.demand_type IN (" + ",".join("?" for _ in types) + ")"
+            where += " AND r.demand_type IN (" + ",".join("?" for _ in types) + ")"
             params.extend(types)
-        sql += " ORDER BY r.created_at DESC"
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        if exclude_status:
+            statuses = [s.strip() for s in exclude_status.split(',')]
+            where += " AND r.status NOT IN (" + ",".join("?" for _ in statuses) + ")"
+            params.extend(statuses)
+        total = conn.execute("SELECT COUNT(*) FROM reqs r" + where, params).fetchone()[0]
+        sort_col = SORT_COLUMNS.get(sort, SORT_COLUMNS["created_at"])
+        sort_dir = "DESC" if dir.lower() == "desc" else "ASC"
+        sql = ("""SELECT r.*,
+                         (SELECT COUNT(*) FROM certificates c WHERE c.req_id = r.id) AS cert_count,
+                         (SELECT COUNT(*) FROM install_locations l WHERE l.req_id = r.id) AS location_count
+                  FROM reqs r""" + where + f" ORDER BY {sort_col} {sort_dir} LIMIT ? OFFSET ?")
+        page = max(page, 1)
+        items = [dict(r) for r in conn.execute(
+            sql, params + [min(page_size, 1000), (page - 1) * page_size]).fetchall()]
+        return {"items": items, "total": total}
 
 
 def _seed_install_tasks(conn, req_id: int):
@@ -158,6 +217,25 @@ def create_req(body: ReqIn, user=Depends(require_auth)):
                     f"Já existe demanda ativa ({dup['req_number']}) para este CN/ambiente. "
                     f"Conclua ou cancele a anterior antes de criar nova.")
 
+        # Demanda de revogação: destino obrigatório, texto livre quando 'outros',
+        # e aviso não-bloqueante de duplicidade (FR-004/FR-005/FR-010)
+        if body.demand_type == 'revogacao':
+            if body.revoke_destination not in REVOKE_DESTINATIONS:
+                raise HTTPException(400, "Escolha o destino da revogação.")
+            if body.revoke_destination == 'outros' and not body.revoke_destination_other.strip():
+                raise HTTPException(400, "Descreva o destino quando escolher 'Outros'.")
+            if body.revoke_cert_id:
+                cert = conn.execute("SELECT lifecycle_status FROM certificates WHERE id=?",
+                                     (body.revoke_cert_id,)).fetchone()
+                if cert and cert["lifecycle_status"] == "revogado":
+                    raise HTTPException(400, "Este certificado já foi revogado.")
+            if not body.force_duplicate:
+                dup = find_existing_active_revocation(conn, body.cn.strip(), body.env, body.revoke_cert_id)
+                if dup:
+                    raise HTTPException(409,
+                        f"Já existe uma demanda de revogação em aberto ({dup['req_number']}) para este "
+                        f"certificado/CN. Confirme novamente para criar mesmo assim.")
+
         # Check for duplicate req_number
         existing = conn.execute("SELECT id FROM reqs WHERE req_number=?", (req_number,)).fetchone()
         if existing:
@@ -165,10 +243,12 @@ def create_req(body: ReqIn, user=Depends(require_auth)):
 
         password = body.password or (_auto_password(conn) if body.auto_password else None)
         cur = conn.execute(
-            "INSERT INTO reqs (req_number, cn, env, password, notes, demand_type, parent_req_id, external_wo, external_crq, external_partner, partner_email, partner_registration, ownership) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO reqs (req_number, cn, env, password, notes, demand_type, parent_req_id, external_wo, external_crq, external_partner, partner_email, partner_registration, ownership, "
+            "revoke_destination, revoke_destination_other, revoke_cert_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (req_number, body.cn.strip(), body.env, password, body.notes,
-             body.demand_type, body.parent_req_id, body.external_wo, body.external_crq, body.external_partner, body.partner_email, body.partner_registration, body.ownership),
+             body.demand_type, body.parent_req_id, body.external_wo, body.external_crq, body.external_partner, body.partner_email, body.partner_registration, body.ownership,
+             body.revoke_destination, body.revoke_destination_other, body.revoke_cert_id),
         )
 
 
@@ -304,6 +384,22 @@ def update_req(req_id: int, body: ReqUpdate, user=Depends(require_auth)):
                 cert_count = conn.execute("SELECT COUNT(*) FROM certificates WHERE req_id=?", (req_id,)).fetchone()[0]
                 if cert_count == 0:
                     raise HTTPException(400, "🔒 Não é possível concluir esta demanda sem antes importar e vincular o certificado emitido.")
+            if demand_type == "revogacao":
+                revoke_cert_id = row["revoke_cert_id"] if "revoke_cert_id" in row.keys() else None
+                if revoke_cert_id:
+                    conn.execute("UPDATE certificates SET lifecycle_status='revogado' WHERE id=?", (revoke_cert_id,))
+
+        if ("revoke_destination" in fields or "revoke_destination_other" in fields):
+            demand_type = fields.get("demand_type", row["demand_type"])
+            if demand_type == "revogacao":
+                destination = fields.get("revoke_destination",
+                                          row["revoke_destination"] if "revoke_destination" in row.keys() else "")
+                if destination not in REVOKE_DESTINATIONS:
+                    raise HTTPException(400, "Escolha o destino da revogação.")
+                other = fields.get("revoke_destination_other",
+                                    row["revoke_destination_other"] if "revoke_destination_other" in row.keys() else "")
+                if destination == "outros" and not (other or "").strip():
+                    raise HTTPException(400, "Descreva o destino quando escolher 'Outros'.")
 
         if fields:
             sets = ", ".join(f"{k}=?" for k in fields)
@@ -319,6 +415,51 @@ def update_req(req_id: int, body: ReqUpdate, user=Depends(require_auth)):
                              req_id, user["id"])
             conn.commit()
         return dict(conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone())
+
+
+def _revocation_provider(destination: str):
+    """Resolve o provider de revogação pelo destino salvo na demanda
+    (contracts/revocation-provider.md — specs/004-revogacao-certificados)."""
+    return {
+        "internacional": lambda: InternacionalRevocationProvider(),
+        "serpro": lambda: SerproRevocationProvider(),
+        "ac_interna_nprd": lambda: AcInternaRevocationProvider(ambiente="nprd"),
+        "ac_interna_prd": lambda: AcInternaRevocationProvider(ambiente="prd"),
+        "outros": lambda: OutrosRevocationProvider(),
+    }[destination]()
+
+
+@router.post("/reqs/{req_id}/revoke")
+def revoke_req(req_id: int, user=Depends(require_auth)):
+    """Aciona o provider de revogação do destino da demanda — nesta fase, sempre
+    'não conectado' (FR-008), mas a chamada é real e fica registrada em activity_log."""
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM reqs WHERE id=?", (req_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Demanda não encontrada")
+        if row["demand_type"] != "revogacao":
+            raise HTTPException(404, "Essa ação só se aplica a demandas de revogação.")
+        destination = row["revoke_destination"] if "revoke_destination" in row.keys() else ""
+        if destination not in REVOKE_DESTINATIONS:
+            raise HTTPException(400, "Demanda sem destino de revogação válido.")
+
+        serial, thumbprint = "", ""
+        revoke_cert_id = row["revoke_cert_id"] if "revoke_cert_id" in row.keys() else None
+        if revoke_cert_id:
+            cert = conn.execute("SELECT serial, thumbprint_sha1, lifecycle_status FROM certificates WHERE id=?",
+                                 (revoke_cert_id,)).fetchone()
+            if cert:
+                if cert["lifecycle_status"] == "revogado":
+                    raise HTTPException(400, "Este certificado já foi revogado.")
+                serial, thumbprint = cert["serial"] or "", cert["thumbprint_sha1"] or ""
+
+        provider = _revocation_provider(destination)
+        result = provider.revoke(row["cn"], serial=serial, thumbprint=thumbprint, reason=row["notes"] or "")
+        log_activity(conn, "revogacao_solicitada",
+                     f"{provider.label} · {'ok' if result['ok'] else result.get('code', 'FALHOU')}",
+                     req_id, user["id"])
+        conn.commit()
+        return {**result, "destination": destination}
 
 
 @router.delete("/reqs/{req_id}")
@@ -479,26 +620,140 @@ def update_location_status(loc_id: int, body: LocationStatusUpdate, user=Depends
         return {"ok": True}
 
 
-@router.get("/activity")
-def recent_activity(limit: int = 30, search: str = "", user_id: int | None = None, action: str = ""):
+@router.get("/install-providers")
+def list_install_providers():
+    """Fonte única de verdade pro frontend montar o formulário por tipo de local."""
+    result = {}
+    for t in INSTALL_LOCATIONS:
+        provider = PROVIDERS.get(t)
+        result[t] = {
+            "label": provider.label if provider else INSTALL_LOCATION_LABELS.get(t, t),
+            "config_fields": provider.config_fields if provider else [],
+            "available": provider is not None,
+            "requires_file": provider.requires_file if provider else False,
+            "key_source": provider.key_source if provider else "none",
+        }
+    return result
+
+
+@router.get("/locations/field-values")
+def location_field_values(field: str, location_type: str = ""):
+    """Valores já usados nesse campo, pra autocomplete (datalist) no formulário."""
     with db_conn() as conn:
-        sql = """SELECT a.*, r.req_number, u.display_name AS user_name FROM activity_log a
-                 LEFT JOIN reqs r ON r.id = a.req_id
-                 LEFT JOIN users u ON u.id = a.user_id
-                 WHERE 1=1"""
+        if field in ("server", "path_or_store"):
+            rows = conn.execute(
+                f"SELECT DISTINCT {field} AS v FROM install_locations "
+                f"WHERE {field} IS NOT NULL AND {field} != '' LIMIT 20").fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT DISTINCT json_extract(config_json, '$.' || ?) AS v
+                   FROM install_locations WHERE location_type = ? LIMIT 20""",
+                (field, location_type)).fetchall()
+        return [r["v"] for r in rows if r["v"]]
+
+
+@router.put("/locations/{loc_id}/config")
+async def update_location_config(loc_id: int, location_type: str = Form(...),
+                                  config_json: str = Form("{}"), credential_ref: str = Form(""),
+                                  file: UploadFile | None = File(None),
+                                  user=Depends(require_auth)):
+    if location_type not in INSTALL_LOCATIONS:
+        raise HTTPException(400, f"Tipo inválido. Use: {', '.join(INSTALL_LOCATIONS)}")
+    try:
+        config = json.loads(config_json)
+    except ValueError:
+        raise HTTPException(400, "config_json inválido")
+    with db_conn() as conn:
+        loc = conn.execute("SELECT * FROM install_locations WHERE id=?", (loc_id,)).fetchone()
+        if not loc:
+            raise HTTPException(404, "Local não encontrado")
+        uploaded_path = loc["uploaded_file_path"]
+        if file and file.filename:
+            req = conn.execute("SELECT * FROM reqs WHERE id=?", (loc["req_id"],)).fetchone()
+            base = get_setting(conn, "base_dir")
+            template = get_setting(conn, "folder_template")
+            folder = folders.create_structure(base, template, req["req_number"], req["cn"], req["env"]) / "pfx"
+            safe_name = folders.sanitize(Path(file.filename).name)
+            dest = folder / f"loc{loc_id}_{safe_name}"
+            dest.write_bytes(await file.read())
+            uploaded_path = str(dest)
+        conn.execute(
+            """UPDATE install_locations
+               SET location_type=?, config_json=?, credential_ref=?, uploaded_file_path=?
+               WHERE id=?""",
+            (location_type, json.dumps(config), credential_ref, uploaded_path, loc_id))
+        log_activity(conn, "local_config_alterada",
+                     f"{loc['server']} · tipo {location_type}", loc["req_id"], user["id"])
+        conn.commit()
+        return dict(conn.execute("SELECT * FROM install_locations WHERE id=?", (loc_id,)).fetchone())
+
+
+@router.post("/locations/{loc_id}/install")
+def run_install(loc_id: int, user=Depends(require_auth)):
+    with db_conn() as conn:
+        loc = conn.execute("SELECT * FROM install_locations WHERE id=?", (loc_id,)).fetchone()
+        if not loc:
+            raise HTTPException(404, "Local não encontrado")
+        provider = PROVIDERS.get(loc["location_type"])
+        if not provider:
+            raise HTTPException(400, f"Tipo '{loc['location_type']}' não tem automação disponível")
+        req = conn.execute("SELECT * FROM reqs WHERE id=?", (loc["req_id"],)).fetchone()
+        config = json.loads(loc["config_json"] or "{}")
+        result = provider.install(location=dict(loc), req=dict(req), config=config,
+                                  credential_ref=loc["credential_ref"])
+        run_status = "sucesso" if result.get("ok") else "falha"
+        conn.execute(
+            "INSERT INTO install_runs (location_id, status, output, error, triggered_by) VALUES (?,?,?,?,?)",
+            (loc_id, run_status, result.get("output", ""), result.get("error", ""), user["id"]))
+        conn.execute(
+            """UPDATE install_locations
+               SET status=?, last_error=?, last_run_at=datetime('now','localtime'),
+                   completed_at=CASE WHEN ?='instalado' THEN datetime('now','localtime') ELSE completed_at END
+               WHERE id=?""",
+            ('instalado' if result.get("ok") else 'falhou', result.get("error", ""),
+             'instalado' if result.get("ok") else 'falhou', loc_id))
+        log_activity(conn, "local_instalacao_executada",
+                     f"{loc['server']} · {provider.label}: {run_status}", loc["req_id"], user["id"])
+        conn.commit()
+        return result
+
+
+@router.get("/locations/{loc_id}/runs")
+def list_install_runs(loc_id: int):
+    with db_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            """SELECT ir.*, u.display_name AS user_name FROM install_runs ir
+               LEFT JOIN users u ON u.id = ir.triggered_by
+               WHERE ir.location_id=? ORDER BY ir.id DESC""", (loc_id,)).fetchall()]
+
+
+@router.get("/activity")
+def recent_activity(limit: int = 50, page: int = 1, search: str = "",
+                    user_id: int | None = None, action: str = ""):
+    with db_conn() as conn:
+        where = " WHERE 1=1"
         params = []
         if search:
-            sql += " AND (a.detail LIKE ? OR a.action LIKE ? OR r.req_number LIKE ?)"
+            where += " AND (a.detail LIKE ? OR a.action LIKE ? OR r.req_number LIKE ?)"
             params += [f"%{search}%"] * 3
         if user_id is not None:
-            sql += " AND a.user_id = ?"
+            where += " AND a.user_id = ?"
             params.append(user_id)
         if action:
-            sql += " AND a.action = ?"
+            where += " AND a.action = ?"
             params.append(action)
-        sql += " ORDER BY a.id DESC LIMIT ?"
-        params.append(min(limit, 500))
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        total = conn.execute(
+            "SELECT COUNT(*) FROM activity_log a LEFT JOIN reqs r ON r.id = a.req_id" + where,
+            params).fetchone()[0]
+        sql = ("""SELECT a.*, r.req_number, u.display_name AS user_name FROM activity_log a
+                  LEFT JOIN reqs r ON r.id = a.req_id
+                  LEFT JOIN users u ON u.id = a.user_id""" + where
+               + " ORDER BY a.id DESC LIMIT ? OFFSET ?")
+        page = max(page, 1)
+        limit = min(limit, 500)
+        items = [dict(r) for r in conn.execute(
+            sql, params + [limit, (page - 1) * limit]).fetchall()]
+        return {"items": items, "total": total}
 
 
 FLOWS: dict[str, str] = {

@@ -1,8 +1,8 @@
-"""Estrutura de pastas por demanda: {base}/{env}/{req}_{cn}/ (csr/, cert/, backup/)."""
+"""Estrutura de pastas por demanda: {base}/{env}/{req}_{cn}/ (csr/, cert/, backup/, pfx/)."""
 import re
 from pathlib import Path
 
-SUBFOLDERS = ["csr", "cert", "backup"]
+SUBFOLDERS = ["csr", "cert", "backup", "pfx"]
 
 
 def sanitize(value: str) -> str:
