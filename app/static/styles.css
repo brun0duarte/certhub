@@ -66,7 +66,7 @@
 /* Modo CAIXA — tema institucional (manual de identidade visual CAIXA) */
 [data-accent="caixa"] {
   --accent: #006CB5; --accent-soft: #D9E8F4; --accent-text: #00508C;
-  --sidebar-bg: #006CB5; --sidebar-text: #FFFFFF; --sidebar-text-dim: rgba(255,255,255,.85);
+  --sidebar-bg: #006CB5; --sidebar-text: #FFFFFF; --sidebar-text-dim: rgba(255,255,255,.92);
   --sidebar-border: rgba(255,255,255,.18);
   --sidebar-hover-bg: rgba(255,255,255,.12);
   /* laranja oficial: positiva (#F79633) pra uso sobre fundo claro, negativa
@@ -90,25 +90,32 @@
 [data-accent="caixa"] #nav a { font-family: var(--font-caixa); }
 [data-accent="caixa"] .view-title { color: var(--accent-text); }
 [data-accent="caixa"] #nav a { font-weight: 600; }
-[data-accent="caixa"] .btn svg,
-[data-accent="caixa"] .badge svg,
-[data-accent="caixa"] .view-title svg,
-[data-accent="caixa"] .app-opt svg,
-[data-accent="caixa"] .opt-icon svg,
-[data-accent="caixa"] .tab-btn svg,
-[data-accent="caixa"] .rtab-btn svg,
-[data-accent="caixa"] .subtab-btn svg,
-[data-accent="caixa"] .wizard-step svg,
-[data-accent="caixa"] .stat-label svg {
+/* Sem escopo de [data-accent="caixa"] de propósito: applyIconSkin() troca emoji→SVG
+   nesses elementos e nunca reverte ao trocar de accent sem recarregar a view — um SVG
+   órfão sem essa regra fica sem width/height e o navegador renderiza no tamanho padrão
+   dele (~300x150px, "ícone gigante"). Fora do modo CAIXA esses seletores nunca têm
+   <svg> de verdade, então manter a regra sempre ativa não muda nada — só protege. */
+.btn svg,
+.badge svg,
+.view-title svg,
+.app-opt svg,
+.opt-icon svg,
+.tab-btn svg,
+.rtab-btn svg,
+.subtab-btn svg,
+.wizard-step svg,
+.stat-label svg {
   width: 1em; height: 1em; vertical-align: -0.15em; margin-right: 4px; flex-shrink: 0;
 }
 /* nav e rodapé do sidebar: tamanho fixo, não relativo ao font-size do host —
    #nav a herda 14.5px do body e ficava desproporcional ao rail de 64px no modo compacto */
 [data-accent="caixa"] #nav a svg,
+[data-accent="caixa"] .sidebar-secondary a svg,
 [data-accent="caixa"] .sidebar-footer .btn svg {
   width: 18px; height: 18px; vertical-align: -0.15em; margin-right: 4px; flex-shrink: 0;
 }
-[data-layout="compact"] #nav a svg { width: 20px; height: 20px; }
+[data-layout="compact"] #nav a svg,
+[data-layout="compact"] .sidebar-secondary a svg { width: 20px; height: 20px; }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -129,19 +136,35 @@ body {
 .brand-icon svg { width: 26px; height: 26px; display: block; }
 .brand-name { font-weight: 700; font-size: 17px; letter-spacing: .3px; color: var(--sidebar-text); }
 .brand-sub { font-size: 11px; color: var(--sidebar-text-dim); }
-#nav { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; flex: 1; }
-#nav a {
+#nav { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; flex: 1; overflow-y: auto; }
+#nav a, .sidebar-secondary a {
   display: flex; align-items: center; gap: 10px; padding: 9px 12px;
   border-radius: 8px; color: var(--sidebar-text-dim); text-decoration: none;
-  font-weight: 500; transition: background .12s, color .12s;
+  font-weight: 500; transition: background .12s, color .12s; min-width: 0;
 }
-#nav a:hover { background: var(--sidebar-hover-bg); color: var(--sidebar-text); }
-#nav a.active { background: var(--accent-soft); color: var(--accent-text); }
+#nav a:hover, .sidebar-secondary a:hover { background: var(--sidebar-hover-bg); color: var(--sidebar-text); }
+#nav a.active, .sidebar-secondary a.active { background: var(--accent-soft); color: var(--accent-text); }
 /* accent-soft/accent-text são pensados pra fundo --bg-panel (branco/quase-branco) —
    sobre o azul institucional sólido do CAIXA viravam uma pastilha destoante */
-[data-accent="caixa"] #nav a.active { background: rgba(255,255,255,.16); color: #FFFFFF; font-weight: 700; }
-[data-accent="caixa"] #nav a.active svg { color: var(--caixa-orange-strong); }
+[data-accent="caixa"] #nav a.active, [data-accent="caixa"] .sidebar-secondary a.active { background: rgba(255,255,255,.16); color: #FFFFFF; font-weight: 700; }
+/* ícone sempre laranja institucional, ativo ou não — só o texto/fundo sinaliza
+   o item selecionado, evitando um menu monocromático (branco-sobre-branco) */
+[data-accent="caixa"] #nav a svg, [data-accent="caixa"] .sidebar-secondary a svg { color: var(--caixa-orange-strong); }
+.nav-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.nav-group-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--sidebar-text-dim); opacity: .65; padding: 10px 12px 4px;
+}
+[data-layout="compact"] .nav-group-label { display: none; }
+/* fundo sólido + texto branco falha contraste em accents claros (âmbar/teal) —
+   usa o mesmo par soft/texto já validado nos outros badges do app (independe do accent) */
+.nav-badge {
+  margin-left: auto; background: var(--red-soft); color: var(--red); font-size: 10.5px;
+  font-weight: 700; line-height: 1; padding: 3px 6px; border-radius: 20px; flex-shrink: 0;
+}
+[data-accent="caixa"] .nav-badge { background: var(--caixa-orange-soft); color: var(--caixa-orange-text); }
 .admin-only { display: none; }
+.sidebar-secondary { padding: 8px 10px; border-top: 1px solid var(--sidebar-border); }
 .sidebar-footer { padding: 12px; border-top: 1px solid var(--sidebar-border); }
 
 /* ---------- layout horizontal (menu no topo) ---------- */
@@ -162,7 +185,9 @@ body {
 [data-layout="compact"] .brand { justify-content: center; padding: 14px 6px; }
 [data-layout="compact"] .brand > div { display: none; }
 [data-layout="compact"] #nav { padding: 8px 7px; }
-[data-layout="compact"] #nav a { justify-content: center; padding: 10px 8px; }
+[data-layout="compact"] #nav a,
+[data-layout="compact"] .sidebar-secondary a { justify-content: center; padding: 10px 8px; }
+[data-layout="compact"] .sidebar-secondary { padding: 8px 7px; }
 [data-layout="compact"] .nav-txt { display: none; }
 [data-layout="compact"] .sidebar-footer {
   display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px;
@@ -201,6 +226,8 @@ body {
 .stat-card.stat-amber .stat-value { color: var(--amber); }
 .stat-card.stat-green .stat-value { color: var(--green); }
 .stat-card.stat-accent .stat-value { color: var(--accent-text); }
+.stat-card.stat-critical { border-color: var(--red); border-width: 2px; }
+.stat-hint { color: var(--text-dim); font-size: 10.5px; margin-top: 2px; }
 
 table.tbl { width: 100%; border-collapse: collapse; }
 .tbl th {
@@ -212,6 +239,12 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .tbl tbody tr:hover { background: var(--bg-hover); }
 .tbl .mono { font-family: var(--mono); font-size: 13px; }
 .empty { color: var(--text-dim); text-align: center; padding: 28px 10px; }
+
+.expiry-group-row { cursor: pointer; color: var(--text-dim); font-size: 13px; }
+.expiry-group-row td { padding: 8px 10px; }
+.expiry-group-row::before { content: "▸ "; }
+.expiry-group.open .expiry-group-row::before { content: "▾ "; }
+.expiry-group:not(.open) .expiry-detail-row { display: none; }
 
 .badge {
   display: inline-block; padding: 3px 9px; border-radius: 20px;
@@ -405,11 +438,14 @@ pre.code-block:hover .copy-btn { opacity: 1; }
 .chain-arrow { text-align: center; color: var(--text-dim); font-size: 11.5px; padding: 5px 0; }
 
 /* ---------- gráficos (analytics) ---------- */
-.chart-vbars { display: flex; gap: 6px; align-items: flex-end; min-height: 160px; padding-top: 8px; }
+.chart-vbars { position: relative; display: flex; gap: 6px; align-items: flex-end; min-height: 160px; padding-top: 8px; }
 .vbar-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; min-width: 0; }
 .vbar { width: 68%; min-width: 8px; border-radius: 6px 6px 2px 2px; }
 .vbar-label { font-size: 10.5px; color: var(--text-dim); white-space: nowrap; }
 .vbar-val { font-size: 11px; color: var(--text-dim); font-weight: 600; }
+.vbar-avg-line { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed var(--text-dim); }
+.vbar-current .vbar-label { color: var(--accent-text); font-weight: 700; }
+.vbar-current .vbar-val { color: var(--accent-text); }
 .hbar-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
 .hbar-label { width: 130px; flex-shrink: 0; font-size: 12.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hbar-track { flex: 1; display: flex; gap: 1px; background: var(--bg-sunken); border-radius: 6px; height: 18px; overflow: hidden; }
@@ -455,6 +491,13 @@ pre.code-block:hover .copy-btn { opacity: 1; }
 .muted { color: var(--text-dim); font-size: 12.5px; }
 .mt { margin-top: 14px; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.env-legend { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-top: 10px; font-size: 12px; color: var(--text-dim); }
+.env-legend-item { display: flex; align-items: center; gap: 5px; }
+.env-legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.env-legend-dot.badge-PRD { background: var(--red); }
+.env-legend-dot.badge-TQS { background: var(--amber); }
+.env-legend-dot.badge-HMP { background: var(--accent); }
+.env-legend-dot.badge-DES { background: var(--green); }
 
 .tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border); margin-bottom: 10px; }
 .tab-btn { padding: 7px 12px; border-radius: 8px 8px 0 0; border: 1px solid transparent;
@@ -623,12 +666,12 @@ pre.code-block:hover .copy-btn { opacity: 1; }
 .user-name { font-weight: 600; font-size: 13px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 
 /* ---------- Lifecycle badges ---------- */
-.badge-lc-pedido        { background: #6c63ff33; color: #a29bfe; border-color: #6c63ff66; }
-.badge-lc-instalado     { background: #00b09433; color: #55efc4; border-color: #00b09466; }
-.badge-lc-em_inventario { background: #0984e333; color: #74b9ff; border-color: #0984e366; }
-.badge-lc-reservado     { background: #fdcb6e33; color: #ffeaa7; border-color: #fdcb6e66; }
-.badge-lc-excluir       { background: #e1706033; color: #ff7675; border-color: #e1706066; }
-.badge-lc-fim_de_vida   { background: #63636333; color: #b2bec3; border-color: #63636366; }
+.badge-lc-pedido        { background: var(--purple-soft); color: var(--purple); }
+.badge-lc-instalado     { background: var(--green-soft); color: var(--green); }
+.badge-lc-em_inventario { background: var(--accent-soft); color: var(--accent-text); }
+.badge-lc-reservado     { background: var(--amber-soft); color: var(--amber); }
+.badge-lc-excluir       { background: var(--red-soft); color: var(--red); }
+.badge-lc-fim_de_vida   { background: var(--gray-soft); color: var(--gray); }
 .lc-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
 .lc-stat { display: flex; align-items: center; gap: 8px; }
 .lc-n    { font-size: 1.2rem; font-weight: 700; }

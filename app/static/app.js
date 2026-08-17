@@ -202,6 +202,10 @@ window.showSanModal = function(mainCn, sansString) {
 
 
 const ENVS = ["PRD", "TQS", "HMP", "DES"];
+/* nome completo de cada ambiente + explicação da cor (severidade) — legenda do Dashboard */
+const ENV_LABEL = {
+  PRD: "Produção", TQS: "Teste de Qualidade", HMP: "Homologação", DES: "Desenvolvimento",
+};
 const STATUSES = ["aberta", "csr_gerada", "cert_emitido", "instalado", "concluida", "cancelada"];
 const STATUS_LABEL = {
   aberta: "Aberta", csr_gerada: "CSR gerada", cert_emitido: "Cert. emitido",
@@ -235,7 +239,7 @@ const LIFECYCLE_STATUS = {
   instalado: 'Instalado',
   em_inventario: 'Em Inventário',
   reservado: 'Reservado',
-  excluir: 'Excluir',
+  excluir: 'Baixado do inventário',
   fim_de_vida: 'Fim de Vida',
   em_renovacao: 'Em Renovação',
   revogado: 'Revogado',
@@ -257,7 +261,7 @@ const ownershipBadge = o => {
   return `<span class="badge ${isPub ? 'badge-purple' : 'badge-blue'}" title="${isPub ? 'Certificado Público / Chave privada não controlada internamente' : 'Certificado Privado / Chave privada controlada internamente'}">${isPub ? '🌐 Público' : '🔒 Privado'}</span>`;
 };
 
-const envBadge = e => `<span class="badge badge-${esc(e)}">${esc(e)}</span>`;
+const envBadge = e => `<span class="badge badge-${esc(e)}" title="${esc(ENV_LABEL[e] || e)}">${esc(e)}</span>`;
 const statusBadge = s => `<span class="badge badge-${esc(s)}">${esc(STATUS_LABEL[s] || s)}</span>`;
 const demandBadge = d => `<span class="badge badge-demand-${esc(d)}">${esc(DEMAND_TYPES[d] || d)}</span>`;
 const lifecycleBadge = s => `<span class="badge badge-lc-${esc(s)}">${esc(LIFECYCLE_STATUS[s] || s)}</span>`;
@@ -327,7 +331,7 @@ function getViewState(name, defaults) {
 async function navigate() {
   const name = (location.hash || "#/dashboard").replace("#/", "").split("?")[0];
   const view = views[name] || views.dashboard;
-  $$("#nav a").forEach(a => a.classList.toggle("active", a.dataset.view === name));
+  $$("#nav a, .sidebar-secondary a").forEach(a => a.classList.toggle("active", a.dataset.view === name));
   main.innerHTML = `<div class="empty">Carregando…</div>`;
   try { await view(); } catch (e) { main.innerHTML = `<div class="empty">Erro: ${esc(e.message)}</div>`; }
   applyIconSkin(main);
@@ -335,21 +339,71 @@ async function navigate() {
 window.addEventListener("hashchange", navigate);
 
 /* ---------------- Dashboard ---------------- */
+/* agrupa itens contíguos com a mesma chave — usado tanto pra "Próximos vencimentos"
+   (por data) quanto pra "Atividade recente" (por ação+REQ). Só agrupa a partir de
+   `minSize` itens consecutivos (specs/009-dashboard-hierarquia-clareza, FR-009/FR-013);
+   abaixo disso cada item continua um grupo de 1 (renderizado solto). */
+function groupConsecutive(items, keyFn, minSize) {
+  const blocks = [];
+  for (const item of items) {
+    const last = blocks[blocks.length - 1];
+    if (last && last.key === keyFn(item)) last.items.push(item);
+    else blocks.push({ key: keyFn(item), items: [item] });
+  }
+  return blocks.map(b => ({ ...b, grouped: b.items.length >= minSize }));
+}
+
+function expiringRow(c, { detail = false } = {}) {
+  const renewBtn = c.has_active_demand
+    ? `<span class="muted">Demanda ativa</span>`
+    : `<button class="btn btn-sm btn-ghost" style="padding:1px 5px" title="Iniciar renovação"
+         data-renew="${c.id}" data-cn="${esc(c.cn)}" data-env="${esc(c.env || 'PRD')}"
+         data-ownership="${esc(c.ownership || 'interno')}" data-partner="${esc(c.external_partner || '')}"
+         data-email="${esc(c.partner_email || '')}">🔄</button>`;
+  return `<tr${detail ? ' class="expiry-detail-row"' : ''}>
+    <td>${esc(c.cn)}</td>
+    <td class="mono">${esc(c.req_number || "—")} ${c.env ? envBadge(c.env) : ""}</td>
+    <td>${fmtDate(c.not_after)}</td>
+    <td>${daysBadge(c.days_left)}</td>
+    <td>${renewBtn}</td></tr>`;
+}
+
 views.dashboard = async () => {
-  const d = await api("/dashboard");
-  const exp = d.expiring;
-  const alerts = d.alert_days;
-  main.innerHTML = `
+  async function load() {
+    const d = await api("/dashboard");
+    const exp = d.expiring;
+    const alerts = d.alert_days;
+
+    const expiryBlocks = groupConsecutive(d.next_expiring, c => String(c.not_after).slice(0, 10), 3);
+    const expiringHtml = expiryBlocks.map((b, gi) => {
+      if (!b.grouped) return `<tbody>${b.items.map(c => expiringRow(c)).join("")}</tbody>`;
+      return `<tbody class="expiry-group" data-group="${gi}">
+        <tr class="expiry-group-row" data-group-toggle>
+          <td colspan="5">${b.items.length} certificados vencem em ${fmtDate(b.key)}</td>
+        </tr>
+        ${b.items.map(c => expiringRow(c, { detail: true })).join("")}
+      </tbody>`;
+    }).join("");
+
+    const activityGroups = groupConsecutive(d.activity, a => `${a.action}|${a.req_number || ""}`, 3);
+
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const reqsByMonth = d.reqs_by_month || [];
+    const reqsByMonthAvg = reqsByMonth.length
+      ? reqsByMonth.reduce((s, r) => s + r.n, 0) / reqsByMonth.length : null;
+
+    main.innerHTML = `
     <div class="view-header"><div>
       <div class="view-title">Dashboard</div>
       <div class="view-sub">Visão geral das demandas e vencimentos</div>
     </div></div>
     <div class="grid grid-cards">
-      <div class="stat-card stat-red"><div class="stat-value">${exp.vencidos}</div><div class="stat-label">Vencidos</div></div>
+      <div class="stat-card stat-red stat-critical"><div class="stat-value">${exp.vencidos}</div><div class="stat-label">Vencidos</div></div>
       ${alerts.map((a, i) => `
-        <div class="stat-card ${i === 0 ? "stat-red" : i === 1 ? "stat-amber" : "stat-green"}">
+        <div class="stat-card ${a <= 30 ? "stat-red" : a <= 60 ? "stat-amber" : "stat-green"}">
           <div class="stat-value">${exp["ate_" + a]}</div>
           <div class="stat-label">Vencem em ≤ ${a} dias</div>
+          ${i > 0 ? `<div class="stat-hint">inclui os já contados em ≤${alerts[i - 1]}d</div>` : ""}
         </div>`).join("")}
       <div class="stat-card stat-accent"><div class="stat-value">${d.totals.reqs_abertas}</div><div class="stat-label">REQs em aberto</div></div>
       <div class="stat-card"><div class="stat-value">${d.totals.certificados}</div><div class="stat-label">Certificados</div></div>
@@ -358,7 +412,7 @@ views.dashboard = async () => {
     <div class="panel mt">
       <h3>Certificados por Lifecycle</h3>
       <div class="lc-grid">
-        ${Object.entries(d.lifecycle).map(([s, n]) => 
+        ${Object.entries(d.lifecycle).map(([s, n]) =>
           `<div class="lc-stat">${lifecycleBadge(s)}<span class="lc-n">${n}</span></div>`
         ).join('')}
       </div>
@@ -366,20 +420,17 @@ views.dashboard = async () => {
     <div class="grid grid-2 mt">
       <div class="panel">
         <h3>Próximos vencimentos</h3>
-        ${d.next_expiring.length ? `<table class="tbl"><thead><tr><th>CN</th><th>REQ</th><th>Vence</th><th></th></tr></thead>
-          <tbody>${d.next_expiring.map(c => `
-            <tr><td>${esc(c.cn)}</td>
-                <td class="mono">${esc(c.req_number || "—")} ${c.env ? envBadge(c.env) : ""}</td>
-                <td>${fmtDate(c.not_after)}</td>
-                <td>${daysBadge(c.days_left)}</td></tr>`).join("")}
-          </tbody></table>` : `<div class="empty">Nenhum certificado próximo do vencimento 🎉</div>`}
+        ${d.next_expiring.length ? `<table class="tbl"><thead><tr><th>CN</th><th>REQ</th><th>Vence</th><th></th><th></th></tr></thead>
+          ${expiringHtml}</table>` : `<div class="empty">Nenhum certificado próximo do vencimento 🎉</div>`}
       </div>
       <div class="panel">
         <h3>Atividade recente</h3>
-        ${d.activity.length ? `<ul class="timeline">${d.activity.map(a => `
-          <li><div>${esc(a.action.replaceAll("_", " "))} ${a.req_number ? `<span class="mono">· ${esc(a.req_number)}</span>` : ""}</div>
-              <div class="muted">${esc(a.detail)}</div>
-              <div class="t-when">${fmtDateTime(a.created_at)}${a.user_name ? ` · ${esc(a.user_name)}` : ""}</div></li>`).join("")}
+        ${d.activity.length ? `<ul class="timeline">${activityGroups.map(g => {
+          const a = g.items[0];
+          const suffix = g.grouped ? ` <span class="badge badge-gray">×${g.items.length}</span>` : "";
+          return `<li><div>${esc(a.action.replaceAll("_", " "))} ${a.req_number ? `<span class="mono">· ${esc(a.req_number)}</span>` : ""}${suffix}</div>
+              <div class="muted t-when">${a.detail ? esc(a.detail) + " · " : ""}${fmtDateTime(a.created_at)}${a.user_name ? ` · ${esc(a.user_name)}` : ""}</div></li>`;
+        }).join("")}
         </ul>` : `<div class="empty">Sem atividade ainda</div>`}
       </div>
     </div>
@@ -390,12 +441,16 @@ views.dashboard = async () => {
         &nbsp;·&nbsp;
         ${STATUSES.map(s => `<span class="badge badge-${s}">${STATUS_LABEL[s]}: ${d.by_status[s] || 0}</span>`).join("")}
       </div>
+      <div class="env-legend">
+        ${ENVS.map(e => `<span class="env-legend-item"><span class="env-legend-dot badge-${e}"></span>${e} — ${ENV_LABEL[e]}</span>`).join("")}
+        <span class="muted">(a cor reflete a criticidade do ambiente)</span>
+      </div>
     </div>
     ${(d.reqs_by_month && d.reqs_by_month.length) || (d.key_types && d.key_types.length) ? `
-    <div class="grid grid-2 mt">
+    <div class="grid grid-3 mt">
       ${d.reqs_by_month && d.reqs_by_month.length ? `
       <div class="panel"><h3>Demandas criadas por mês</h3>
-        ${chartVBars(d.reqs_by_month.map(r => ({ label: r.month, n: r.n })), { fmt: fmtMonth })}
+        ${chartVBars(d.reqs_by_month.map(r => ({ label: r.month, n: r.n })), { fmt: fmtMonth, avg: reqsByMonthAvg, currentLabel: currentMonth })}
       </div>` : ''}
       ${d.key_types && d.key_types.length ? `
       <div class="panel"><h3>Tipos de chave</h3>
@@ -411,6 +466,15 @@ views.dashboard = async () => {
         ])}
       </div>` : ''}
     </div>` : ''}`;
+
+    $$("[data-group-toggle]").forEach(el => el.onclick = () => el.closest(".expiry-group").classList.toggle("open"));
+    $$("[data-renew]").forEach(el => el.onclick = () => {
+      const cn = el.dataset.cn, env = el.dataset.env, certId = el.dataset.renew;
+      const ownership = el.dataset.ownership, partner = el.dataset.partner, email = el.dataset.email;
+      newDemandModal('renovacao', { cn, env, certId, ownership, external_partner: partner, partner_email: email }, load);
+    });
+  }
+  await load();
 };
 
 /* ---------------- Kanban ---------------- */
@@ -480,6 +544,7 @@ views.kanban = async () => {
         } catch (err) { toast(err.message, "err"); }
       };
     });
+    refreshNavCounts();
   }
 
   $("#k-filter").onchange = () => { filterCat = $("#k-filter").value; load(); };
@@ -1164,6 +1229,7 @@ async function newDemandModal(defaultType, opts = {}, onDone) {
     }
     closeModal();
     toast(`Demanda ${row.req_number} criada` + (row.password ? ' · senha gerada' : ''));
+    if (row.demand_type === 'revogacao') refreshNavCounts();
     onDone && onDone();
   };
 
@@ -2053,6 +2119,7 @@ async function openReq(id, onDone, opts = {}) {
         partner_registration: $("#d-partner-reg") ? $("#d-partner-reg").value : undefined,
       }});
       closeModal(); onDone && onDone();
+      if (r.demand_type === 'revogacao') refreshNavCounts();
 
       let advanced = false;
       // Ao concluir geração/recebimento/renovação, avançar a mesma REQ para fase de instalação
@@ -3745,15 +3812,22 @@ const PALETTE = ["var(--accent)", "var(--green)", "var(--amber)", "var(--purple)
                  "var(--teal)", "var(--red)", "var(--gray)"];
 const fmtMonth = m => m ? `${m.slice(5, 7)}/${m.slice(2, 4)}` : "";
 
-function chartVBars(items, { fmt = l => l, color = "var(--accent)" } = {}) {
+function chartVBars(items, { fmt = l => l, color = "var(--accent)", avg = null, currentLabel = null } = {}) {
   if (!items.length) return `<div class="empty">Sem dados</div>`;
   const max = Math.max(...items.map(i => i.n), 1);
-  return `<div class="chart-vbars">${items.map(i => `
-    <div class="vbar-col" title="${esc(i.label)}: ${i.n}">
+  const avgLine = avg !== null
+    ? `<div class="vbar-avg-line" style="bottom:${Math.round(avg / max * 120) + 18}px"
+         title="Média do período: ${avg.toFixed(1)}"></div>`
+    : "";
+  return `<div class="chart-vbars">${avgLine}${items.map(i => {
+    const isCurrent = currentLabel !== null && i.label === currentLabel;
+    return `
+    <div class="vbar-col${isCurrent ? " vbar-current" : ""}" title="${esc(i.label)}: ${i.n}">
       <div class="vbar-val">${i.n || ""}</div>
-      <div class="vbar" style="height:${Math.round(i.n / max * 120) + 2}px;background:${color}"></div>
+      <div class="vbar" style="height:${Math.round(i.n / max * 120) + 2}px;background:${isCurrent ? "var(--accent)" : color}"></div>
       <div class="vbar-label">${esc(fmt(i.label))}</div>
-    </div>`).join("")}</div>`;
+    </div>`;
+  }).join("")}</div>`;
 }
 
 function chartHBars(items, colorOf = (i, idx) => PALETTE[idx % PALETTE.length]) {
@@ -3984,14 +4058,10 @@ views.appearance = async () => {
 };
 
 /* ---------------- tema ---------------- */
-const themeBtn = $("#theme-toggle");
 const collapseBtn = $("#menu-collapse");
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
   localStorage.setItem("certhub-theme", t);
-  themeBtn.innerHTML = t === "dark"
-    ? `☀️<span class="nav-txt"> Tema claro</span>`
-    : `🌙<span class="nav-txt"> Tema escuro</span>`;
   applyIconSkin($(".sidebar-footer"));
 }
 function applyLayout(l) {
@@ -4003,33 +4073,49 @@ function applyLayout(l) {
 }
 collapseBtn.onclick = () =>
   applyLayout(document.documentElement.dataset.layout === "compact" ? "side" : "compact");
-/* ícones originais dos itens de #nav, capturados uma vez antes de qualquer troca,
-   pra poder reverter ao sair do Modo CAIXA (US4/US7) */
+/* ícones originais dos itens de #nav/.sidebar-secondary, capturados uma vez antes
+   de qualquer troca, pra poder reverter ao sair do Modo CAIXA (US4/US7) */
 const NAV_DEFAULT_ICONS = {};
-$$("#nav a[data-view]").forEach(a => { NAV_DEFAULT_ICONS[a.dataset.view] = a.children[0].innerHTML; });
+$$("#nav a[data-view], .sidebar-secondary a[data-view]").forEach(a => { NAV_DEFAULT_ICONS[a.dataset.view] = a.children[0].innerHTML; });
 
 function applyAccent(a) {
   document.documentElement.dataset.accent = a;
   localStorage.setItem("certhub-accent", a);
   const brandIcon = $(".brand-icon");
   if (brandIcon) brandIcon.innerHTML = a === "caixa" ? CAIXA_X_ICON : BRAND_ICON_DEFAULT;
-  $$("#nav a[data-view]").forEach(navA => {
+  $$("#nav a[data-view], .sidebar-secondary a[data-view]").forEach(navA => {
     navA.children[0].innerHTML = a === "caixa"
       ? (NAV_ICONS[navA.dataset.view] || NAV_DEFAULT_ICONS[navA.dataset.view])
       : NAV_DEFAULT_ICONS[navA.dataset.view];
   });
   const favicon = $('link[rel="icon"]');
   if (favicon) favicon.href = a === "caixa" ? CAIXA_FAVICON_HREF : DEFAULT_FAVICON_HREF;
-  /* rodapé (tema/sair/recolher) é sempre reconstruído a partir do emoji original
+  /* rodapé (sair/recolher) é sempre reconstruído a partir do emoji original
      aqui, pra reverter corretamente ao sair do CAIXA sem precisar tocar tema/layout */
   applyTheme(document.documentElement.dataset.theme);
   applyLayout(document.documentElement.dataset.layout);
 }
-themeBtn.onclick = () =>
-  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 applyTheme(localStorage.getItem("certhub-theme") || "dark");
 applyLayout(localStorage.getItem("certhub-layout") || "side");
 applyAccent(localStorage.getItem("certhub-accent") || "blue");
+
+/* badge de pendências (Revogação/Kanban) no menu lateral — specs/010-menu-lateral-reorganizacao US5 */
+async function refreshNavCounts() {
+  let counts;
+  try { counts = await api("/nav-counts"); } catch { return; }
+  [["revogacao", counts.revogacao_pendente], ["kanban", counts.kanban_pendente]].forEach(([view, n]) => {
+    const a = $(`#nav a[data-view="${view}"]`);
+    if (!a) return;
+    let badge = a.querySelector(".nav-badge");
+    if (n > 0) {
+      if (!badge) { badge = document.createElement("span"); badge.className = "nav-badge"; a.appendChild(badge); }
+      badge.textContent = n;
+    } else if (badge) {
+      badge.remove();
+    }
+  });
+}
+refreshNavCounts();
 
 (async () => {
   try {
