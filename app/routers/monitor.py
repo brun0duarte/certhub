@@ -5,31 +5,69 @@ from app.routers.auth import require_auth
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
 
+SORT_COLUMNS = {
+    "cn": "c.cn",
+    "days_left": "days_left",
+    "env": "r.env",
+    "lifecycle": "c.lifecycle_status",
+    "not_after": "c.not_after",
+}
+
 @router.get("/expiring")
-def get_expiring_certs(days: int = Query(90, ge=0), pending_only: bool = False):
+def get_expiring_certs(
+    days: int = Query(90, ge=0),
+    pending_only: bool = False,
+    search: str = "",
+    ownership: str = "",
+    sort: str = "not_after",
+    dir: str = "asc",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+):
     """Lista certificados próximos do vencimento."""
     conn = get_db()
-    where_clause = "AND (julianday(c.not_after) - julianday('now','localtime') <= ? OR julianday(c.not_after) < julianday('now','localtime'))"
+    conditions = [
+        "c.lifecycle_status IN ('instalado', 'em_inventario', 'reservado')",
+        "(julianday(c.not_after) - julianday('now','localtime') <= ? OR julianday(c.not_after) < julianday('now','localtime'))",
+    ]
+    params = [days]
     if pending_only:
-        where_clause += " AND active_req.id IS NULL"
+        conditions.append("active_req.id IS NULL")
+    if search:
+        conditions.append("(c.cn LIKE ? OR c.sans LIKE ? OR r.req_number LIKE ?)")
+        params.extend([f"%{search}%"] * 3)
+    if ownership:
+        conditions.append("c.ownership = ?")
+        params.append(ownership)
 
-    query = f"""
-        SELECT c.*, r.req_number, r.env,
-               CAST(julianday(c.not_after) - julianday('now','localtime') AS INTEGER) as days_left,
-               CASE WHEN active_req.id IS NOT NULL THEN 1 ELSE 0 END as has_active_demand
+    where = "WHERE " + " AND ".join(conditions)
+
+    sort_col = SORT_COLUMNS.get(sort, SORT_COLUMNS["not_after"])
+    sort_dir = "DESC" if dir.lower() == "desc" else "ASC"
+
+    joins = """
         FROM certificates c
         LEFT JOIN reqs r ON c.req_id = r.id
         LEFT JOIN reqs active_req ON active_req.cn = c.cn
             AND active_req.demand_type IN ('geracao','recebimento')
             AND active_req.status NOT IN ('concluida','cancelada')
-        WHERE c.lifecycle_status IN ('instalado', 'em_inventario', 'reservado')
-        {where_clause}
-        ORDER BY c.not_after ASC
     """
-    rows = conn.execute(query, (days,)).fetchall()
+
+    total = conn.execute(f"SELECT COUNT(*) {joins} {where}", params).fetchone()[0]
+
+    query = f"""
+        SELECT c.*, r.req_number, r.env,
+               CAST(julianday(c.not_after) - julianday('now','localtime') AS INTEGER) as days_left,
+               CASE WHEN active_req.id IS NOT NULL THEN 1 ELSE 0 END as has_active_demand
+        {joins}
+        {where}
+        ORDER BY {sort_col} {sort_dir}
+        LIMIT ? OFFSET ?
+    """
+    rows = conn.execute(query, params + [page_size, (page - 1) * page_size]).fetchall()
     result = [dict(r) for r in rows]
     conn.close()
-    return result
+    return {"items": result, "total": total, "page": page, "page_size": page_size}
 
 @router.get("/lifecycle")
 def get_by_lifecycle(status: str = "", search: str = ""):

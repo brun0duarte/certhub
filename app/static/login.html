@@ -1,10 +1,13 @@
 <!DOCTYPE html>
 <html lang="pt-BR" data-theme="dark">
 <head>
+    <script>document.documentElement.dataset.accent = localStorage.getItem('certhub-accent') || 'blue';</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CertHub — Login</title>
     <link rel="stylesheet" href="/static/styles.css">
+    <link rel="icon" id="favicon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
+    <script src="/static/icons.js"></script>
     <style>
         body {
             display: flex;
@@ -38,6 +41,7 @@
             justify-content: center;
             gap: 8px;
         }
+        [data-accent="caixa"] .brand-header h1 svg { width: 220px; max-width: 100%; height: auto; display: block; margin: 0 auto; }
         .brand-header p {
             margin: 0;
             color: var(--text-dim);
@@ -103,6 +107,11 @@
     </div>
 
     <script>
+        if (document.documentElement.dataset.accent === 'caixa') {
+            document.querySelector('.brand-header h1').innerHTML = CAIXA_WORDMARK;
+            document.querySelector('.brand-header p').textContent = 'CertHub — Gerenciador de Certificados';
+            document.getElementById('favicon').href = CAIXA_FAVICON_HREF;
+        }
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const username = document.getElementById('username').value;

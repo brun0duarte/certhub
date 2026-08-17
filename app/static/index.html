@@ -9,6 +9,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
 <!-- Mermaid.js for flow diagrams -->
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="/static/icons.js"></script>
 </head>
 <body>
 <div class="layout">
@@ -25,15 +26,17 @@
       <a href="#/monitor" data-view="monitor" title="Monitor de Vencimentos"><span>📡</span><span class="nav-txt">Monitor</span></a>
       <a href="#/geracao" data-view="geracao" title="Geração / Recebimento"><span>📋</span><span class="nav-txt">Geração</span></a>
       <a href="#/instalacao" data-view="instalacao" title="Instalação"><span>🔧</span><span class="nav-txt">Instalação</span></a>
+      <a href="#/revogacao" data-view="revogacao" title="Revogação"><span>🚫</span><span class="nav-txt">Revogação</span></a>
       <a href="#/historico" data-view="historico" title="Histórico — buscar qualquer demanda"><span>🗄️</span><span class="nav-txt">Histórico</span></a>
       <a href="#/kanban" data-view="kanban" title="Kanban"><span>🗂️</span><span class="nav-txt">Kanban</span></a>
       <a href="#/csr" data-view="csr" title="Gerar CSR"><span>📝</span><span class="nav-txt">Gerar CSR</span></a>
+      <a href="#/hsm" data-view="hsm" title="HSM (Dinamo)"><span>🔐</span><span class="nav-txt">HSM</span></a>
       <a href="#/decoder" data-view="decoder" title="Decoder"><span>🔍</span><span class="nav-txt">Decoder</span></a>
       <a href="#/certs" data-view="certs" title="Certificados"><span>📜</span><span class="nav-txt">Certificados</span></a>
       <a href="#/validate" data-view="validate" title="Validar cadeia"><span>🔗</span><span class="nav-txt">Validar cadeia</span></a>
       <a href="#/passwords" data-view="passwords" title="Senhas"><span>🔑</span><span class="nav-txt">Senhas</span></a>
       <a href="#/docs" data-view="docs" title="Manuais &amp; Comandos"><span>📖</span><span class="nav-txt">Manuais &amp; Comandos</span></a>
-      <a href="#/users" data-view="users" title="Usuários"><span>👥</span><span class="nav-txt">Usuários</span></a>
+      <a href="#/users" data-view="users" title="Usuários" class="admin-only"><span>👥</span><span class="nav-txt">Usuários</span></a>
       <a href="#/auditoria" data-view="auditoria" title="Log de Auditoria"><span>🕵️</span><span class="nav-txt">Auditoria</span></a>
       <a href="#/appearance" data-view="appearance" title="Aparência"><span>🎨</span><span class="nav-txt">Aparência</span></a>
       <a href="#/settings" data-view="settings" title="Configurações"><span>⚙️</span><span class="nav-txt">Configurações</span></a>

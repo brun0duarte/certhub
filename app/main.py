@@ -6,20 +6,20 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import init_db
-from .routers import (certs, checklists, csr, dashboard, decoder, docs, files, monitor,
+from .routers import (certs, checklists, csr, dashboard, decoder, docs, files, hsm, monitor,
                       passwords, reqs, settings, tasks, templates, validate, auth, users)
 from .routers.auth import require_auth
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="CertHub", version="2.0")
+app = FastAPI(title="CertHub", version="2.1")
 
 init_db()
 
 for router in (reqs.router, certs.router, csr.router, passwords.router,
                dashboard.router, docs.router, files.router, monitor.router,
                settings.router, tasks.router, templates.router, validate.router,
-               decoder.router, checklists.router):
+               decoder.router, checklists.router, hsm.router):
     app.include_router(router, prefix="/api", dependencies=[Depends(require_auth)])
 
 # login/logout precisam ficar públicos — auth.router não leva a dependência global

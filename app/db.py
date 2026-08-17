@@ -25,7 +25,14 @@ INSTALL_LOCATIONS = [
     "secrets_manager", "azion", "akamai", "iis", "apache", "nginx",
     "tomcat", "outro",
 ]
-INSTALL_STATUSES = ['pendente', 'instalado', 'falhou']
+INSTALL_LOCATION_LABELS = {
+    "mainframe": "Mainframe", "balanceador": "Balanceador",
+    "keyvault_azure": "Key Vault Azure", "aws_cert_manager": "AWS Cert Manager",
+    "secrets_manager": "Secrets Manager", "azion": "Azion", "akamai": "Akamai",
+    "iis": "IIS", "apache": "Apache", "nginx": "Nginx", "tomcat": "Tomcat", "outro": "Outro",
+}
+INSTALL_STATUSES = ['pendente', 'executando', 'instalado', 'falhou']
+INSTALL_RUN_STATUSES = ['sucesso', 'falha']
 
 SCHEMA = """
 CREATE TABLE reqs (
@@ -218,7 +225,9 @@ CREATE TABLE work_orders (
 );
 """
 
-LIFECYCLE_STATUSES = ['pedido', 'instalado', 'em_inventario', 'reservado', 'excluir', 'fim_de_vida', 'em_renovacao']
+LIFECYCLE_STATUSES = ['pedido', 'instalado', 'em_inventario', 'reservado', 'excluir', 'fim_de_vida', 'em_renovacao', 'revogado']
+
+REVOKE_DESTINATIONS = ['internacional', 'serpro', 'ac_interna_nprd', 'ac_interna_prd', 'outros']
 
 SCHEMA_V8 = """
 ALTER TABLE certificates ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'em_inventario';
@@ -275,6 +284,15 @@ DEFAULT_SETTINGS = {
         "gen_key": "",
         "gen_csr": "",
         "export_key": "",
+    }),
+    "hsm_dinamo_config": json.dumps({
+        "host": "", "port": "", "username": "", "password": "",
+    }),
+    "hsm_dinamo_profiles": json.dumps({
+        "active": "", "profiles": [],
+    }),
+    "installer_credentials": json.dumps({
+        "keyvault_azure": {}, "aws": {}, "azion": {}, "akamai": {},
     }),
 }
 
@@ -528,6 +546,107 @@ def init_db():
             pass
         version = 21
 
+    if version >= 21 and version < 22:
+        # Instalação automatizada por local: tipo/config já existia location_type
+        # (nunca usado de fato), aqui ganha os campos específicos por provider,
+        # referência de credencial (BeyondTrust — nunca o segredo em si) e o
+        # resultado da última tentativa. install_runs guarda o histórico completo.
+        for stmt in (
+            "ALTER TABLE install_locations ADD COLUMN config_json TEXT DEFAULT '{}'",
+            "ALTER TABLE install_locations ADD COLUMN credential_ref TEXT DEFAULT ''",
+            "ALTER TABLE install_locations ADD COLUMN last_error TEXT DEFAULT ''",
+            "ALTER TABLE install_locations ADD COLUMN last_run_at TEXT",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        try:
+            conn.execute("""CREATE TABLE install_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                location_id INTEGER NOT NULL REFERENCES install_locations(id) ON DELETE CASCADE,
+                status TEXT NOT NULL CHECK (status IN ('sucesso','falha')),
+                output TEXT DEFAULT '',
+                error TEXT DEFAULT '',
+                triggered_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            )""")
+        except sqlite3.OperationalError:
+            pass
+        version = 22
+
+    if version >= 22 and version < 23:
+        # Arquivo enviado manualmente pro local (PFX/cert+chave em texto) quando o
+        # provider precisa de um arquivo (Azure/Azion) — armazenado em disco, só o
+        # caminho fica no banco (mesmo padrão de certificates.file_path).
+        try:
+            conn.execute("ALTER TABLE install_locations ADD COLUMN uploaded_file_path TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        version = 23
+
+    if version >= 23 and version < 24:
+        # Rótulo da chave no HSM (Dinamo), quando o certificado veio de lá
+        # (source='hsm') — vincula o registro local à entrada correspondente no HSM.
+        try:
+            conn.execute("ALTER TABLE certificates ADD COLUMN hsm_label TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        version = 24
+
+    if version >= 24 and version < 25:
+        # Fluxo de geração integrado ao HSM (criar chave + gerar CSR + importar
+        # certificado direto no HSM, sem nada em disco local — specs de
+        # "geração integrada ao HSM"). hsm_sim_keys é o keystore do provider
+        # simulado (sem hardware Dinamo real); reqs.hsm_label/hsm_engine
+        # rastreiam qual REQ está vinculada a qual chave/mecanismo HSM;
+        # certificates.cert_pem permite exibir PEM/cadeia de certificados
+        # importados via HSM, que não têm file_path local.
+        try:
+            conn.execute("""CREATE TABLE IF NOT EXISTS hsm_sim_keys (
+                label TEXT PRIMARY KEY,
+                key_type TEXT NOT NULL DEFAULT 'rsa2048',
+                key_pem TEXT NOT NULL,
+                cert_pem TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            )""")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE reqs ADD COLUMN hsm_label TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE reqs ADD COLUMN hsm_engine TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE certificates ADD COLUMN cert_pem TEXT")
+        except sqlite3.OperationalError:
+            pass
+        version = 25
+
+    if version >= 25 and version < 26:
+        # Demandas de revogação (specs/004-revogacao-certificados): destino/canal
+        # de revogação (Internacional, Serpro, AC Interna NPRD/PRD, Outros) e
+        # vínculo opcional com o certificado alvo quando a demanda nasce do
+        # inventário. Certificado ganha o valor 'revogado' em lifecycle_status
+        # quando a demanda de revogação vinculada é concluída.
+        try:
+            conn.execute("ALTER TABLE reqs ADD COLUMN revoke_destination TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE reqs ADD COLUMN revoke_destination_other TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE reqs ADD COLUMN revoke_cert_id INTEGER REFERENCES certificates(id) ON DELETE SET NULL")
+        except sqlite3.OperationalError:
+            pass
+        version = 26
+
     if version > 0:
         conn.execute(f"PRAGMA user_version = {version}")
         conn.commit()
@@ -605,6 +724,23 @@ def log_activity(conn, action: str, detail: str = "", req_id=None, user_id=None)
 def get_setting(conn, key: str) -> str:
     row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     return row["value"] if row else DEFAULT_SETTINGS.get(key, "")
+
+
+def get_hsm_profiles(conn) -> dict:
+    """Retorna {"active": str, "profiles": [...]} de hsm_dinamo_profiles, migrando o
+    hsm_dinamo_config legado (perfil único) na primeira leitura, sem exigir recadastro
+    (specs/002-busca-filtro-hsm-perfis/data-model.md)."""
+    config = json.loads(get_setting(conn, "hsm_dinamo_profiles"))
+    if not config.get("profiles"):
+        legacy = json.loads(get_setting(conn, "hsm_dinamo_config"))
+        if legacy.get("host"):
+            config = {"active": "Padrão", "profiles": [{"name": "Padrão", **legacy}]}
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('hsm_dinamo_profiles', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (json.dumps(config),))
+            conn.commit()
+    return config
 
 
 def _seed(conn):
