@@ -23,28 +23,37 @@
     </div>
     <nav id="nav">
       <a href="#/dashboard" data-view="dashboard" title="Dashboard"><span>📊</span><span class="nav-txt">Dashboard</span></a>
+
+      <div class="nav-group-label">Certificados</div>
+      <a href="#/certs" data-view="certs" title="Certificados"><span>📜</span><span class="nav-txt">Certificados</span></a>
+      <a href="#/decoder" data-view="decoder" title="Decoder"><span>🔍</span><span class="nav-txt">Decoder</span></a>
+      <a href="#/validate" data-view="validate" title="Validar cadeia"><span>🔗</span><span class="nav-txt">Validar cadeia</span></a>
       <a href="#/monitor" data-view="monitor" title="Monitor de Vencimentos"><span>📡</span><span class="nav-txt">Monitor</span></a>
+
+      <div class="nav-group-label">Ciclo de vida</div>
       <a href="#/geracao" data-view="geracao" title="Geração / Recebimento"><span>📋</span><span class="nav-txt">Geração</span></a>
       <a href="#/instalacao" data-view="instalacao" title="Instalação"><span>🔧</span><span class="nav-txt">Instalação</span></a>
       <a href="#/revogacao" data-view="revogacao" title="Revogação"><span>🚫</span><span class="nav-txt">Revogação</span></a>
       <a href="#/historico" data-view="historico" title="Histórico — buscar qualquer demanda"><span>🗄️</span><span class="nav-txt">Histórico</span></a>
-      <a href="#/kanban" data-view="kanban" title="Kanban"><span>🗂️</span><span class="nav-txt">Kanban</span></a>
       <a href="#/csr" data-view="csr" title="Gerar CSR"><span>📝</span><span class="nav-txt">Gerar CSR</span></a>
+      <a href="#/kanban" data-view="kanban" title="Kanban"><span>🗂️</span><span class="nav-txt">Kanban</span></a>
+
+      <div class="nav-group-label">Segurança</div>
       <a href="#/hsm" data-view="hsm" title="HSM (Dinamo)"><span>🔐</span><span class="nav-txt">HSM</span></a>
-      <a href="#/decoder" data-view="decoder" title="Decoder"><span>🔍</span><span class="nav-txt">Decoder</span></a>
-      <a href="#/certs" data-view="certs" title="Certificados"><span>📜</span><span class="nav-txt">Certificados</span></a>
-      <a href="#/validate" data-view="validate" title="Validar cadeia"><span>🔗</span><span class="nav-txt">Validar cadeia</span></a>
       <a href="#/passwords" data-view="passwords" title="Senhas"><span>🔑</span><span class="nav-txt">Senhas</span></a>
-      <a href="#/docs" data-view="docs" title="Manuais &amp; Comandos"><span>📖</span><span class="nav-txt">Manuais &amp; Comandos</span></a>
+
+      <div class="nav-group-label">Sistema</div>
       <a href="#/users" data-view="users" title="Usuários" class="admin-only"><span>👥</span><span class="nav-txt">Usuários</span></a>
       <a href="#/auditoria" data-view="auditoria" title="Log de Auditoria"><span>🕵️</span><span class="nav-txt">Auditoria</span></a>
+      <a href="#/docs" data-view="docs" title="Manuais &amp; Comandos"><span>📖</span><span class="nav-txt">Manuais</span></a>
+    </nav>
+    <div class="sidebar-secondary">
       <a href="#/appearance" data-view="appearance" title="Aparência"><span>🎨</span><span class="nav-txt">Aparência</span></a>
       <a href="#/settings" data-view="settings" title="Configurações"><span>⚙️</span><span class="nav-txt">Configurações</span></a>
-    </nav>
+    </div>
     <div class="sidebar-footer">
       <div id="sidebar-user" class="sidebar-user-section"></div>
       <button id="btn-logout" class="btn btn-ghost" title="Sair">🚪<span class="nav-txt"> Sair</span></button>
-      <button id="theme-toggle" class="btn btn-ghost" title="Alternar tema">🌙 Tema</button>
       <button id="menu-collapse" class="btn btn-ghost" title="Recolher/expandir menu">⇤</button>
     </div>
   </aside>

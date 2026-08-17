@@ -6,6 +6,20 @@ from ..db import get_db, get_setting
 router = APIRouter(tags=["dashboard"])
 
 
+@router.get("/nav-counts")
+def nav_counts():
+    """Contagem de pendências acionáveis pro badge do menu lateral
+    (specs/010-menu-lateral-reorganizacao, US5)."""
+    conn = get_db()
+    revogacao_pendente = conn.execute(
+        "SELECT COUNT(*) FROM reqs WHERE demand_type = 'revogacao' "
+        "AND status NOT IN ('concluida','cancelada')").fetchone()[0]
+    kanban_pendente = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE lane != 'concluido'").fetchone()[0]
+    conn.close()
+    return {"revogacao_pendente": revogacao_pendente, "kanban_pendente": kanban_pendente}
+
+
 @router.get("/dashboard")
 def dashboard():
     conn = get_db()
@@ -28,8 +42,14 @@ def dashboard():
 
     next_expiring = [dict(r) for r in conn.execute(
         f"""SELECT c.id, c.cn, c.not_after, {days_left_sql} AS days_left,
-                   r.req_number, r.env
-            FROM certificates c LEFT JOIN reqs r ON r.id = c.req_id
+                   r.req_number, r.env,
+                   c.ownership, c.external_partner, c.partner_email,
+                   CASE WHEN active_req.id IS NOT NULL THEN 1 ELSE 0 END AS has_active_demand
+            FROM certificates c
+            LEFT JOIN reqs r ON r.id = c.req_id
+            LEFT JOIN reqs active_req ON active_req.cn = c.cn
+                AND active_req.demand_type IN ('geracao','recebimento')
+                AND active_req.status NOT IN ('concluida','cancelada')
             WHERE {days_left_sql} <= ?
             ORDER BY c.not_after ASC LIMIT 10""", (max(alert_days),))]
 
