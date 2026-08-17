@@ -110,6 +110,7 @@ function reqPicker(container, reqs, options = {}) {
       ? items.map(r => `<div class="req-picker-item" data-id="${r.id}">${esc(label(r))}</div>`).join("")
       : `<div class="req-picker-empty">Nenhuma demanda encontrada</div>`;
     list.innerHTML = html;
+    applyIconSkin(list);
     list.classList.add("open");
     list.querySelectorAll("[data-id]").forEach(el => el.addEventListener("mousedown", e => {
       e.preventDefault();
@@ -151,6 +152,7 @@ function modal(title, bodyHtml, { footer = "", large = false } = {}) {
         ${footer ? `<div class="modal-footer">${footer}</div>` : ""}
       </div>
     </div>`;
+  applyIconSkin(root);
 
   const overlay = $(".modal-overlay", root);
   if (overlay) {
@@ -328,6 +330,7 @@ async function navigate() {
   $$("#nav a").forEach(a => a.classList.toggle("active", a.dataset.view === name));
   main.innerHTML = `<div class="empty">Carregando…</div>`;
   try { await view(); } catch (e) { main.innerHTML = `<div class="empty">Erro: ${esc(e.message)}</div>`; }
+  applyIconSkin(main);
 }
 window.addEventListener("hashchange", navigate);
 
@@ -1879,7 +1882,7 @@ async function openReq(id, onDone, opts = {}) {
   $$("[data-loc-type]").forEach(sel => sel.onchange = async () => {
     const locId = sel.dataset.locType;
     const box = document.querySelector(`[data-loc-config="${locId}"]`);
-    if (box) { box.innerHTML = renderLocConfigFields(locId, sel.value, '{}', ''); fillLocAutocomplete(box, sel.value); }
+    if (box) { box.innerHTML = renderLocConfigFields(locId, sel.value, '{}', ''); applyIconSkin(box); fillLocAutocomplete(box, sel.value); }
     const credRef = document.querySelector(`[data-loc-credref="${locId}"]`);
     if (credRef && !credRef.value) credRef.value = r.req_number;
     const installBtn = document.querySelector(`[data-loc-install="${locId}"]`);
@@ -1890,6 +1893,7 @@ async function openReq(id, onDone, opts = {}) {
       const nowAvailable = provider && provider.available;
       badge.className = `badge ${nowAvailable ? 'badge-auto-yes' : 'badge-auto-no'}`;
       badge.textContent = nowAvailable ? '🤖 Automatizável' : '📖 Manual';
+      applyIconSkin(badge.parentElement);
     }
     // Persiste o tipo imediatamente — sem isso, o select só muda visualmente e a
     // troca "some" ao reabrir a demanda (volta pro tipo salvo, "outro" por padrão).
@@ -2306,6 +2310,7 @@ views.csr = async () => {
         '</div>';
     }
     $("#c-result").innerHTML = html;
+    applyIconSkin($("#c-result"));
     const bind = (btn, src, label) => { const b = $(btn); if (b) b.onclick = () => copyText($(src).value, label); };
     bind("#r-copy-csr", "#r-csr", "CSR copiada!");
     bind("#r-copy-key", "#r-key", "Chave copiada!");
@@ -3041,6 +3046,7 @@ views.hsm = async () => {
           <td>${r.not_after ? fmtDate(r.not_after) : "—"}</td>
         </tr>`).join("")}
       </tbody></table>`;
+    applyIconSkin($("#h-search-result"));
   }
 
   $("#h-search-go").onclick = async () => {
@@ -3443,6 +3449,7 @@ views.settings = async () => {
         </div>
       </div>`;
     }).join("") : `<div class="empty">Nenhum perfil de HSM cadastrado — adicione um abaixo.</div>`;
+    applyIconSkin($("#hsm-profiles-list"));
 
     $$("[data-hp-name]").forEach(el => el.onchange = () => { state.profiles[+el.dataset.hpName].name = el.value; });
     $$("[data-hp-engine]").forEach(el => el.onchange = () => { state.profiles[+el.dataset.hpEngine].engine = el.value; renderHsmProfiles(); });
@@ -3705,6 +3712,7 @@ views.validate = async () => {
     if (res.warnings.length) html += `<div class="mt">${res.warnings.map(w =>
       `<div class="muted">⚠️ ${esc(w)}</div>`).join("")}</div>`;
     $("#v-result").innerHTML = html;
+    applyIconSkin($("#v-result"));
   }
 
   $("#v-go").onclick = async () => {
@@ -3925,7 +3933,11 @@ function showUserModal(u = null) {
 const ACCENTS = [
   ["blue", "#3b6ef6"], ["green", "#1f9d63"], ["purple", "#7a4fd4"],
   ["teal", "#0e8f96"], ["amber", "#b97e0a"], ["red", "#d4384c"],
+  ["caixa", "#006CB5"],
 ];
+
+/* CAIXA_X_ICON, BRAND_ICON_DEFAULT, EMOJI_ICONS, NAV_ICONS e applyIconSkin
+   vêm de icons.js (carregado antes deste arquivo). */
 
 views.appearance = async () => {
   const cur = () => ({
@@ -3980,18 +3992,38 @@ function applyTheme(t) {
   themeBtn.innerHTML = t === "dark"
     ? `☀️<span class="nav-txt"> Tema claro</span>`
     : `🌙<span class="nav-txt"> Tema escuro</span>`;
+  applyIconSkin($(".sidebar-footer"));
 }
 function applyLayout(l) {
   document.documentElement.dataset.layout = l;
   localStorage.setItem("certhub-layout", l);
   collapseBtn.textContent = l === "compact" ? "⇥" : "⇤";
   collapseBtn.title = l === "compact" ? "Expandir menu" : "Recolher menu";
+  applyIconSkin($(".sidebar-footer"));
 }
 collapseBtn.onclick = () =>
   applyLayout(document.documentElement.dataset.layout === "compact" ? "side" : "compact");
+/* ícones originais dos itens de #nav, capturados uma vez antes de qualquer troca,
+   pra poder reverter ao sair do Modo CAIXA (US4/US7) */
+const NAV_DEFAULT_ICONS = {};
+$$("#nav a[data-view]").forEach(a => { NAV_DEFAULT_ICONS[a.dataset.view] = a.children[0].innerHTML; });
+
 function applyAccent(a) {
   document.documentElement.dataset.accent = a;
   localStorage.setItem("certhub-accent", a);
+  const brandIcon = $(".brand-icon");
+  if (brandIcon) brandIcon.innerHTML = a === "caixa" ? CAIXA_X_ICON : BRAND_ICON_DEFAULT;
+  $$("#nav a[data-view]").forEach(navA => {
+    navA.children[0].innerHTML = a === "caixa"
+      ? (NAV_ICONS[navA.dataset.view] || NAV_DEFAULT_ICONS[navA.dataset.view])
+      : NAV_DEFAULT_ICONS[navA.dataset.view];
+  });
+  const favicon = $('link[rel="icon"]');
+  if (favicon) favicon.href = a === "caixa" ? CAIXA_FAVICON_HREF : DEFAULT_FAVICON_HREF;
+  /* rodapé (tema/sair/recolher) é sempre reconstruído a partir do emoji original
+     aqui, pra reverter corretamente ao sair do CAIXA sem precisar tocar tema/layout */
+  applyTheme(document.documentElement.dataset.theme);
+  applyLayout(document.documentElement.dataset.layout);
 }
 themeBtn.onclick = () =>
   applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");

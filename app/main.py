@@ -12,7 +12,7 @@ from .routers.auth import require_auth
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="CertHub", version="2.0")
+app = FastAPI(title="CertHub", version="2.1")
 
 init_db()
 

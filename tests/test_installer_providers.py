@@ -185,6 +185,13 @@ def test_azure_missing_key_material(monkeypatch):
     assert "HSM" in result["error"]
 
 
+_KEYVAULT_IMPORT_RESPONSE = {
+    "id": "https://vault1.vault.azure.net/certificates/cert1/3691dd9ffcb64387ac6c50a2a24f7265",
+    "x5t": "MnDOH_QidmMXGLsqLY1KwDmFtx4",
+    "attributes": {"nbf": 1786856515, "exp": 1788043710},
+}
+
+
 def test_azure_success(monkeypatch):
     _patch_conn(monkeypatch, installer_credentials={
         "keyvault_azure": {"tenant_id": "t", "client_id": "c", "client_secret": "s"}})
@@ -197,7 +204,7 @@ def test_azure_success(monkeypatch):
         calls.append(url)
         if "login.microsoftonline.com" in url:
             return _Resp(200, {"access_token": "tok"})
-        return _Resp(200, {})
+        return _Resp(200, _KEYVAULT_IMPORT_RESPONSE)
 
     monkeypatch.setattr(providers.requests, "post", fake_post)
     result = providers.AzureKeyVaultProvider().install(
@@ -205,7 +212,55 @@ def test_azure_success(monkeypatch):
         config={"vault_name": "vault1", "certificate_name": "cert1"}, credential_ref="")
     assert result["ok"] is True
     assert "vault1" in result["output"]
+    assert "3691dd9ffcb64387ac6c50a2a24f7265" in result["output"]
+    assert "2026-08-29" in result["output"]
+    assert "MnDOH_QidmMXGLsqLY1KwDmFtx4" in result["output"]
     assert len(calls) == 2
+
+
+def test_azure_success_response_missing_fields(monkeypatch):
+    """Resposta 200 sem id/x5t/attributes: instalação continua sucesso, cai na mensagem genérica (FR-004)."""
+    _patch_conn(monkeypatch, installer_credentials={
+        "keyvault_azure": {"tenant_id": "t", "client_id": "c", "client_secret": "s"}})
+    _key, _cert, key_pem, cert_pem = _rsa_key_and_cert()
+    monkeypatch.setattr(providers, "_resolve_key_material", lambda location, req: (key_pem, cert_pem, ""))
+
+    def fake_post(url, **kwargs):
+        if "login.microsoftonline.com" in url:
+            return _Resp(200, {"access_token": "tok"})
+        return _Resp(200, {})
+
+    monkeypatch.setattr(providers.requests, "post", fake_post)
+    result = providers.AzureKeyVaultProvider().install(
+        location={}, req=REQ,
+        config={"vault_name": "vault1", "certificate_name": "cert1"}, credential_ref="")
+    assert result["ok"] is True
+    assert result["output"] == "Certificado importado no Key Vault 'vault1' como 'cert1'."
+
+
+def test_azure_request_includes_policy(monkeypatch):
+    """A requisição de importação sempre declara a política do certificado (FR-001)."""
+    _patch_conn(monkeypatch, installer_credentials={
+        "keyvault_azure": {"tenant_id": "t", "client_id": "c", "client_secret": "s"}})
+    _key, _cert, key_pem, cert_pem = _rsa_key_and_cert()
+    monkeypatch.setattr(providers, "_resolve_key_material", lambda location, req: (key_pem, cert_pem, ""))
+
+    import_calls = []
+
+    def fake_post(url, **kwargs):
+        if "login.microsoftonline.com" in url:
+            return _Resp(200, {"access_token": "tok"})
+        import_calls.append(kwargs.get("json"))
+        return _Resp(200, _KEYVAULT_IMPORT_RESPONSE)
+
+    monkeypatch.setattr(providers.requests, "post", fake_post)
+    providers.AzureKeyVaultProvider().install(
+        location={}, req=REQ,
+        config={"vault_name": "vault1", "certificate_name": "cert1"}, credential_ref="")
+    assert len(import_calls) == 1
+    policy = import_calls[0]["policy"]
+    assert policy["key_props"] == {"exportable": True, "kty": "RSA", "key_size": 2048, "reuse_key": False}
+    assert policy["secret_props"] == {"contentType": "application/x-pkcs12"}
 
 
 def test_azure_api_error_passed_through(monkeypatch):

@@ -11,6 +11,7 @@ não pode ser autenticada.
 """
 import base64
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -196,12 +197,23 @@ class AzureKeyVaultProvider(InstallProvider):
                 f"https://{vault_name}.vault.azure.net/certificates/{cert_name}/import",
                 params={"api-version": "7.4"},
                 headers={"Authorization": f"Bearer {access_token}"},
-                json={"value": base64.b64encode(pfx_bytes).decode(), "pwd": ""},
+                json={"value": base64.b64encode(pfx_bytes).decode(), "pwd": "",
+                      "policy": {"key_props": {"exportable": True, "kty": "RSA", "key_size": 2048, "reuse_key": False},
+                                 "secret_props": {"contentType": "application/x-pkcs12"}}},
                 timeout=30)
         except requests.RequestException as e:
             return {"ok": False, "output": "", "error": f"Falha de rede ao acessar o Key Vault: {e}"}
         if resp.ok:
-            return {"ok": True, "output": f"Certificado importado no Key Vault '{vault_name}' como '{cert_name}'.", "error": ""}
+            output = f"Certificado importado no Key Vault '{vault_name}' como '{cert_name}'."
+            try:
+                data = resp.json()
+                version = data["id"].rsplit("/", 1)[-1]
+                not_after = datetime.fromtimestamp(data["attributes"]["exp"], tz=timezone.utc).strftime("%Y-%m-%d")
+                output = (f"Certificado importado no Key Vault '{vault_name}' como '{cert_name}' "
+                          f"(versão {version}) — válido até {not_after} · thumbprint {data['x5t']}.")
+            except (ValueError, KeyError, TypeError):
+                pass
+            return {"ok": True, "output": output, "error": ""}
         return {"ok": False, "output": "", "error": f"Azure Key Vault retornou erro ({resp.status_code}): {resp.text}"}
 
 

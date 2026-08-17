@@ -1,4 +1,6 @@
 /* CertHub — tema claro/escuro via [data-theme] */
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@600;700&display=swap');
+
 :root, [data-theme="light"] {
   --bg: #f4f6fa;
   --bg-panel: #ffffff;
@@ -18,6 +20,11 @@
   --gray: #66718a;  --gray-soft: #e8ebf1;
   --shadow: 0 1px 3px rgba(20,30,55,.08), 0 4px 16px rgba(20,30,55,.06);
   --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --sidebar-bg: var(--bg-panel);
+  --sidebar-text: var(--text);
+  --sidebar-text-dim: var(--text-dim);
+  --sidebar-border: var(--border);
+  --sidebar-hover-bg: var(--bg-hover);
 }
 [data-theme="dark"] {
   --bg: #12151c;
@@ -37,6 +44,11 @@
   --teal: #43c3cb;  --teal-soft: #103436;
   --gray: #8b94a8;  --gray-soft: #262c39;
   --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.25);
+  --sidebar-bg: var(--bg-panel);
+  --sidebar-text: var(--text);
+  --sidebar-text-dim: var(--text-dim);
+  --sidebar-border: var(--border);
+  --sidebar-hover-bg: var(--bg-hover);
 }
 
 /* cores de destaque — selecionáveis na aba Aparência */
@@ -51,6 +63,53 @@
 [data-theme="dark"][data-accent="amber"]  { --accent: #e8b34b; --accent-soft: #3a2e11; --accent-text: #f0c675; }
 [data-theme="dark"][data-accent="red"]    { --accent: #f16a7c; --accent-soft: #411d24; --accent-text: #f58e9b; }
 
+/* Modo CAIXA — tema institucional (manual de identidade visual CAIXA) */
+[data-accent="caixa"] {
+  --accent: #006CB5; --accent-soft: #D9E8F4; --accent-text: #00508C;
+  --sidebar-bg: #006CB5; --sidebar-text: #FFFFFF; --sidebar-text-dim: rgba(255,255,255,.85);
+  --sidebar-border: rgba(255,255,255,.18);
+  --sidebar-hover-bg: rgba(255,255,255,.12);
+  /* laranja oficial: positiva (#F79633) pra uso sobre fundo claro, negativa
+     (#F39200) pra uso sobre o azul institucional sólido — valores extraídos
+     direto dos vetores da marca (CAIXA_chapada_positiva/negativa.svg) */
+  --caixa-orange: #F79633; --caixa-orange-soft: #FEEFDD; --caixa-orange-text: #945812;
+  --caixa-orange-strong: #F39200;
+  --font-caixa: "Poppins", "Segoe UI", system-ui, sans-serif;
+}
+[data-theme="dark"][data-accent="caixa"] { --accent: #0097D7; --accent-soft: #0F2A42; --accent-text: #4DB8E8; }
+
+/* .btn-ghost usa --text-dim por padrão (não migrado para --sidebar-text-dim em T004) —
+   sem isso, os botões do rodapé da sidebar (tema/logout/colapsar) ficam quase invisíveis
+   sobre o azul institucional (contraste medido ~1.2:1 no tema claro). */
+[data-accent="caixa"] .sidebar-footer .btn-ghost { color: var(--sidebar-text-dim); }
+[data-accent="caixa"] .sidebar-footer .btn-ghost:hover { color: var(--sidebar-text); background: var(--sidebar-hover-bg); }
+
+[data-accent="caixa"] .brand-name,
+[data-accent="caixa"] .view-title,
+[data-accent="caixa"] .panel h3,
+[data-accent="caixa"] #nav a { font-family: var(--font-caixa); }
+[data-accent="caixa"] .view-title { color: var(--accent-text); }
+[data-accent="caixa"] #nav a { font-weight: 600; }
+[data-accent="caixa"] .btn svg,
+[data-accent="caixa"] .badge svg,
+[data-accent="caixa"] .view-title svg,
+[data-accent="caixa"] .app-opt svg,
+[data-accent="caixa"] .opt-icon svg,
+[data-accent="caixa"] .tab-btn svg,
+[data-accent="caixa"] .rtab-btn svg,
+[data-accent="caixa"] .subtab-btn svg,
+[data-accent="caixa"] .wizard-step svg,
+[data-accent="caixa"] .stat-label svg {
+  width: 1em; height: 1em; vertical-align: -0.15em; margin-right: 4px; flex-shrink: 0;
+}
+/* nav e rodapé do sidebar: tamanho fixo, não relativo ao font-size do host —
+   #nav a herda 14.5px do body e ficava desproporcional ao rail de 64px no modo compacto */
+[data-accent="caixa"] #nav a svg,
+[data-accent="caixa"] .sidebar-footer .btn svg {
+  width: 18px; height: 18px; vertical-align: -0.15em; margin-right: 4px; flex-shrink: 0;
+}
+[data-layout="compact"] #nav a svg { width: 20px; height: 20px; }
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body {
@@ -62,29 +121,34 @@ body {
 /* ---------- sidebar ---------- */
 .sidebar {
   width: 232px; flex-shrink: 0; display: flex; flex-direction: column;
-  background: var(--bg-panel); border-right: 1px solid var(--border);
+  background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border);
   position: sticky; top: 0; height: 100vh;
 }
 .brand { display: flex; gap: 10px; align-items: center; padding: 18px 16px 14px; }
 .brand-icon { font-size: 26px; }
-.brand-name { font-weight: 700; font-size: 17px; letter-spacing: .3px; }
-.brand-sub { font-size: 11px; color: var(--text-dim); }
+.brand-icon svg { width: 26px; height: 26px; display: block; }
+.brand-name { font-weight: 700; font-size: 17px; letter-spacing: .3px; color: var(--sidebar-text); }
+.brand-sub { font-size: 11px; color: var(--sidebar-text-dim); }
 #nav { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; flex: 1; }
 #nav a {
   display: flex; align-items: center; gap: 10px; padding: 9px 12px;
-  border-radius: 8px; color: var(--text-dim); text-decoration: none;
+  border-radius: 8px; color: var(--sidebar-text-dim); text-decoration: none;
   font-weight: 500; transition: background .12s, color .12s;
 }
-#nav a:hover { background: var(--bg-hover); color: var(--text); }
+#nav a:hover { background: var(--sidebar-hover-bg); color: var(--sidebar-text); }
 #nav a.active { background: var(--accent-soft); color: var(--accent-text); }
+/* accent-soft/accent-text são pensados pra fundo --bg-panel (branco/quase-branco) —
+   sobre o azul institucional sólido do CAIXA viravam uma pastilha destoante */
+[data-accent="caixa"] #nav a.active { background: rgba(255,255,255,.16); color: #FFFFFF; font-weight: 700; }
+[data-accent="caixa"] #nav a.active svg { color: var(--caixa-orange-strong); }
 .admin-only { display: none; }
-.sidebar-footer { padding: 12px; border-top: 1px solid var(--border); }
+.sidebar-footer { padding: 12px; border-top: 1px solid var(--sidebar-border); }
 
 /* ---------- layout horizontal (menu no topo) ---------- */
 [data-layout="top"] .layout { flex-direction: column; }
 [data-layout="top"] .sidebar {
   width: 100%; height: auto; flex-direction: row; align-items: center;
-  border-right: none; border-bottom: 1px solid var(--border); z-index: 50;
+  border-right: none; border-bottom: 1px solid var(--sidebar-border); z-index: 50;
 }
 [data-layout="top"] .brand { padding: 10px 14px; flex-shrink: 0; }
 [data-layout="top"] .brand-sub { display: none; }
@@ -192,6 +256,9 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .btn:hover { background: var(--bg-hover); }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-primary:hover { filter: brightness(1.1); background: var(--accent); }
+/* #fff sobre --accent escuro (#0097D7) só dá 3.28:1 (reprovado AA) — texto escuro
+   dedicado garante 4.63:1 (research.md §10/§5b) */
+[data-theme="dark"][data-accent="caixa"] .btn-primary { color: #00293D; }
 .btn-danger { color: var(--red); border-color: var(--red-soft); }
 .btn-ghost { border-color: transparent; background: transparent; color: var(--text-dim); }
 .btn-ghost:hover { background: var(--bg-hover); color: var(--text); }
@@ -320,6 +387,7 @@ pre.code-block:hover .copy-btn { opacity: 1; }
 .badge-prio-media { background: var(--amber-soft); color: var(--amber); }
 .badge-prio-baixa { background: var(--gray-soft); color: var(--gray); }
 .badge.k-cat { background: var(--accent-soft); color: var(--accent-text); }
+[data-accent="caixa"] .badge.k-cat { background: var(--caixa-orange-soft); color: var(--caixa-orange-text); }
 
 /* ---------- validação de cadeia ---------- */
 .verdict {
@@ -369,7 +437,10 @@ pre.code-block:hover .copy-btn { opacity: 1; }
 }
 .app-opt:hover { background: var(--bg-hover); }
 .app-opt.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
-.app-opt .opt-icon { font-size: 26px; margin-bottom: 6px; }
+/* emoji colorido tem peso visual maior que ícone de linha no mesmo font-size —
+   18px de emoji ≈ 22px de ícone de linha (CAIXA) em tamanho percebido */
+.app-opt .opt-icon { font-size: 18px; margin-bottom: 6px; }
+[data-accent="caixa"] .app-opt .opt-icon { font-size: 22px; }
 .swatch {
   width: 44px; height: 44px; border-radius: 50%; cursor: pointer;
   border: 3px solid transparent; transition: transform .12s;
